@@ -22,8 +22,10 @@ type change struct {
 }
 
 type database struct {
-	state  store.State
-	blocks map[uint64][]byte
+	// deleted marks a deleted database. Its record stays, so that epoch and version continue if it is created again.
+	deleted bool
+	state   store.State
+	blocks  map[uint64][]byte
 	// changes is the change log: the last store.ChangeWindow commits, oldest first.
 	changes []change
 	lease   store.Lease
@@ -52,6 +54,20 @@ func (s *Store) Open(_ context.Context, req store.OpenRequest) (store.OpenResult
 	defer s.mu.Unlock()
 
 	db, ok := s.dbs[req.Key]
+	if ok && db.deleted {
+		switch {
+		case req.Resume != nil:
+			return store.OpenResult{}, store.ErrFenced
+		case !req.Create:
+			return store.OpenResult{}, store.ErrNotFound
+		case !store.ValidPageSize(req.PageSize):
+			return store.OpenResult{}, store.BadRequest("page size %d is not a power of two from %d to %d",
+				req.PageSize, store.MinPageSize, store.MaxPageSize)
+		}
+		// Create the deleted database anew, empty. Epoch and version continue.
+		db.deleted = false
+		db.state.PageSize = req.PageSize
+	}
 	switch {
 	case !ok && (!req.Create || req.Resume != nil):
 		return store.OpenResult{}, store.ErrNotFound
@@ -91,7 +107,7 @@ func (s *Store) Fetch(_ context.Context, key store.Key, version, first, count ui
 	defer s.mu.Unlock()
 
 	db, ok := s.dbs[key]
-	if !ok {
+	if !ok || db.deleted {
 		return nil, store.ErrNotFound
 	}
 	if version != db.state.Version {
@@ -167,7 +183,7 @@ func (s *Store) Changes(_ context.Context, key store.Key, fromVersion uint64) (s
 	defer s.mu.Unlock()
 
 	db, ok := s.dbs[key]
-	if !ok {
+	if !ok || db.deleted {
 		return store.ChangeSet{}, store.ErrNotFound
 	}
 	if fromVersion > db.state.Version {
@@ -224,6 +240,27 @@ func (s *Store) Release(_ context.Context, key store.Key, epoch uint64) error {
 	}
 	db.holder = nil
 	return nil
+}
+
+func (s *Store) Delete(_ context.Context, req store.DeleteRequest) (store.DeleteResult, error) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+
+	db, ok := s.dbs[req.Key]
+	if !ok || db.deleted {
+		return store.DeleteResult{}, nil
+	}
+	active := db.holder != nil && req.Now.Before(db.expiresAt)
+	if active && !req.Takeover {
+		return store.DeleteResult{}, &store.LeaseHeldError{Since: db.grantedAt}
+	}
+	db.deleted = true
+	db.blocks = make(map[uint64][]byte)
+	db.changes = nil
+	db.state = store.State{PageSize: db.state.PageSize, Version: db.state.Version + 1}
+	db.lease = store.Lease{Epoch: db.lease.Epoch + 1}
+	db.holder = nil
+	return store.DeleteResult{Epoch: db.lease.Epoch, Revoked: active}, nil
 }
 
 // Ping implements store.Store. It always succeeds.

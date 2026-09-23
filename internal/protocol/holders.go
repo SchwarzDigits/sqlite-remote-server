@@ -48,3 +48,18 @@ func (h *holders) remove(key store.Key, owner *connection) {
 		delete(h.m, key)
 	}
 }
+
+// revoke removes the holder of key after the database was deleted. If its lease is older than epoch, revoke calls its
+// revoked callback.
+func (h *holders) revoke(key store.Key, epoch uint64) {
+	h.mu.Lock()
+	previous, ok := h.m[key]
+	if ok {
+		delete(h.m, key)
+	}
+	h.mu.Unlock()
+
+	if ok && previous.epoch < epoch {
+		go previous.revoked(epoch)
+	}
+}

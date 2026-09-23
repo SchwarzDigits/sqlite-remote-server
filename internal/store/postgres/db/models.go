@@ -35,4 +35,5 @@ type Database struct {
 	LeaseHolder  []byte
 	LeaseGranted pgtype.Timestamptz
 	LeaseExpires pgtype.Timestamptz
+	Deleted      bool
 }

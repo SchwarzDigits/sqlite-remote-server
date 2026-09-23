@@ -97,6 +97,9 @@ func samples() []sample {
 			DbId: dbID, LeaseEpoch: 3,
 		}}}},
 		{"server_ok", &pb.ServerFrame{RequestId: 6, Body: &pb.ServerFrame_Ok{Ok: &pb.Ok{}}}},
+		{"client_delete", &pb.ClientFrame{RequestId: 7, Body: &pb.ClientFrame_Delete{Delete: &pb.Delete{
+			DbId: dbID, Takeover: true,
+		}}}},
 		{"server_lease_revoked", &pb.ServerFrame{RequestId: 0, Body: &pb.ServerFrame_LeaseRevoked{
 			LeaseRevoked: &pb.LeaseRevoked{DbId: dbID, NewLeaseEpoch: 4},
 		}}},

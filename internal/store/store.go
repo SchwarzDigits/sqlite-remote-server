@@ -65,6 +65,23 @@ type OpenResult struct {
 	Revoked bool
 }
 
+// DeleteRequest deletes a database.
+type DeleteRequest struct {
+	Key Key
+	// Takeover deletes even if another instance holds an unexpired lease.
+	Takeover bool
+	Now      time.Time
+}
+
+// DeleteResult describes a deletion.
+type DeleteResult struct {
+	// Epoch is the lease epoch after the deletion. Every lease with a lower epoch is fenced. 0 if nothing was deleted
+	// because the database did not exist or was already deleted.
+	Epoch uint64
+	// Revoked is true if the deletion took an unexpired lease from its holder.
+	Revoked bool
+}
+
 // Block is one page-sized block of the database file.
 type Block struct {
 	Index uint64
@@ -123,12 +140,17 @@ type Store interface {
 	Renew(ctx context.Context, key Key, epoch uint64, now time.Time, ttl time.Duration) error
 	// Release gives up the lease with the given epoch.
 	Release(ctx context.Context, key Key, epoch uint64) error
+	// Delete deletes a database: its blocks and its change log. The store keeps a record of the database and
+	// increases its lease epoch and version, so that no earlier lease can commit again, also after the database was
+	// created anew. Deleting a missing or deleted database succeeds and changes nothing. A deleted database behaves
+	// as missing, except that Open with Resume returns ErrFenced and Open with Create continues epoch and version.
+	Delete(ctx context.Context, req DeleteRequest) (DeleteResult, error)
 	// Ping checks that the store is reachable. The readiness endpoint uses it.
 	Ping(ctx context.Context) error
 }
 
 var (
-	// ErrNotFound means the database does not exist.
+	// ErrNotFound means the database does not exist or was deleted.
 	ErrNotFound = errors.New("database not found")
 	// ErrFenced means the lease epoch is not the current one. Another instance took the lease, or it was released.
 	ErrFenced = errors.New("lease epoch is stale")

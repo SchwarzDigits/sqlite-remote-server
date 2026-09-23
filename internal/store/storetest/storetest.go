@@ -57,6 +57,12 @@ func Run(t *testing.T, newStore func(t *testing.T) store.Store) {
 		{"ChangesRejectFutureVersion", changesRejectFutureVersion},
 		{"SubjectsAreSeparate", subjectsAreSeparate},
 		{"BlocksAreCopies", blocksAreCopies},
+		{"DeleteRemovesDatabase", deleteRemovesDatabase},
+		{"DeleteFencesEveryEarlierLease", deleteFencesEveryEarlierLease},
+		{"ActiveLeaseBlocksDelete", activeLeaseBlocksDelete},
+		{"DeleteIsIdempotent", deleteIsIdempotent},
+		{"RecreatedDatabaseHasNoChangeLog", recreatedDatabaseHasNoChangeLog},
+		{"RecreatedDatabaseMayChangePageSize", recreatedDatabaseMayChangePageSize},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			tc.run(t, newStore(t))
@@ -441,4 +447,115 @@ func changesRejectFutureVersion(t *testing.T, s store.Store) {
 	// A version ahead of the server means the server lost commits. Changes must return a bad request.
 	_, err = s.Changes(context.Background(), k, 2)
 	requireBadRequest(t, err)
+}
+
+func remove(s store.Store, k store.Key, takeover bool, now time.Time) (store.DeleteResult, error) {
+	return s.Delete(context.Background(), store.DeleteRequest{Key: k, Takeover: takeover, Now: now})
+}
+
+// deleteAfterCommits creates a database with two commits, releases its lease and deletes it. It returns the lease
+// of the deleted database and the version it had.
+func deleteAfterCommits(t *testing.T, s store.Store, k store.Key) (store.Lease, uint64) {
+	t.Helper()
+	lease := create(t, s, k, instanceA, t0).Lease
+	_, err := commit(s, k, lease.Epoch, 0, 2, commit1, t0, block(0, 0xa0), block(1, 0xa1))
+	require.NoError(t, err)
+	version, err := commit(s, k, lease.Epoch, 1, 2, commit2, t0, block(1, 0xa2))
+	require.NoError(t, err)
+	require.NoError(t, s.Release(context.Background(), k, lease.Epoch))
+	res, err := remove(s, k, false, t0.Add(time.Second))
+	require.NoError(t, err)
+	require.Greater(t, res.Epoch, lease.Epoch, "deleting must increase the epoch")
+	require.False(t, res.Revoked, "a released lease is not revoked")
+	return lease, version
+}
+
+func deleteRemovesDatabase(t *testing.T, s store.Store) {
+	k := key(t, "db")
+	_, version := deleteAfterCommits(t, s, k)
+
+	_, err := open(s, k, instanceA, false, t0.Add(2*time.Second))
+	require.ErrorIs(t, err, store.ErrNotFound, "a deleted database is not found without create")
+	_, err = s.Fetch(context.Background(), k, version, 0, 1)
+	require.ErrorIs(t, err, store.ErrNotFound)
+	_, err = s.Changes(context.Background(), k, 0)
+	require.ErrorIs(t, err, store.ErrNotFound)
+
+	res := create(t, s, k, instanceA, t0.Add(2*time.Second))
+	require.Zero(t, res.State.PageCount, "a recreated database is empty")
+	require.Empty(t, res.State.LastCommitID)
+	require.Greater(t, res.State.Version, version, "the version continues after a deletion")
+	blocks, err := s.Fetch(context.Background(), k, res.State.Version, 0, 0)
+	require.NoError(t, err)
+	require.Empty(t, blocks)
+}
+
+func deleteFencesEveryEarlierLease(t *testing.T, s store.Store) {
+	k := key(t, "db")
+	old := create(t, s, k, instanceA, t0).Lease
+	res, err := remove(s, k, true, t0.Add(time.Second))
+	require.NoError(t, err)
+	require.True(t, res.Revoked, "deleting with takeover revokes an unexpired lease")
+
+	_, err = commit(s, k, old.Epoch, 0, 1, commit1, t0, block(0, 0xa0))
+	requireFenced(t, err)
+	requireFenced(t, s.Renew(context.Background(), k, old.Epoch, t0, ttl))
+	_, err = s.Open(context.Background(), store.OpenRequest{
+		Key: k, InstanceID: instanceA, Resume: &store.Resume{LeaseID: old.ID, LeaseEpoch: old.Epoch}, Now: t0, TTL: ttl,
+	})
+	requireFenced(t, err)
+
+	// After the database is created anew, the old lease must still not commit. Its epoch must not come back.
+	recreated := create(t, s, k, instanceB, t0.Add(2*time.Second))
+	require.Greater(t, recreated.Lease.Epoch, res.Epoch)
+	_, err = commit(s, k, old.Epoch, recreated.State.Version, 1, commit1, t0, block(0, 0xa0))
+	requireFenced(t, err)
+	_, err = commit(s, k, recreated.Lease.Epoch, recreated.State.Version, 1, commit1, t0, block(0, 0xb0))
+	require.NoError(t, err)
+}
+
+func activeLeaseBlocksDelete(t *testing.T, s store.Store) {
+	k := key(t, "db")
+	create(t, s, k, instanceA, t0)
+	_, err := remove(s, k, false, t0.Add(time.Second))
+	var held *store.LeaseHeldError
+	require.ErrorAs(t, err, &held)
+
+	res, err := remove(s, k, false, t0.Add(ttl+time.Second))
+	require.NoError(t, err, "an expired lease does not block a deletion")
+	require.False(t, res.Revoked)
+}
+
+func deleteIsIdempotent(t *testing.T, s store.Store) {
+	res, err := remove(s, key(t, "missing"), false, t0)
+	require.NoError(t, err)
+	require.Zero(t, res.Epoch)
+
+	k := key(t, "db")
+	deleteAfterCommits(t, s, k)
+	res, err = remove(s, k, false, t0.Add(2*time.Second))
+	require.NoError(t, err, "deleting a deleted database succeeds")
+	require.Zero(t, res.Epoch)
+}
+
+func recreatedDatabaseHasNoChangeLog(t *testing.T, s store.Store) {
+	k := key(t, "db")
+	_, version := deleteAfterCommits(t, s, k)
+	res := create(t, s, k, instanceA, t0.Add(2*time.Second))
+
+	// A local copy from before the deletion must not be caught up: the change log does not reach back to it.
+	set, err := s.Changes(context.Background(), k, version)
+	require.NoError(t, err)
+	require.False(t, set.Complete)
+	require.Equal(t, res.State.Version, set.ToVersion)
+}
+
+func recreatedDatabaseMayChangePageSize(t *testing.T, s store.Store) {
+	k := key(t, "db")
+	deleteAfterCommits(t, s, k)
+	res, err := s.Open(context.Background(), store.OpenRequest{
+		Key: k, InstanceID: instanceA, PageSize: 4 * pageSize, Create: true, Now: t0.Add(2 * time.Second), TTL: ttl,
+	})
+	require.NoError(t, err)
+	require.Equal(t, uint32(4*pageSize), res.State.PageSize)
 }

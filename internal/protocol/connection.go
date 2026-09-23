@@ -259,6 +259,8 @@ func (c *connection) handle(ctx context.Context, frame *pb.ClientFrame) {
 		c.ping(ctx, id, body.Ping)
 	case *pb.ClientFrame_CloseDb:
 		c.closeDB(ctx, id, body.CloseDb)
+	case *pb.ClientFrame_Delete:
+		c.deleteDB(ctx, id, body.Delete)
 	case *pb.ClientFrame_Hello:
 		c.fail(ctx, id, store.BadRequest("Hello was already sent"))
 	default:
@@ -505,6 +507,30 @@ func (c *connection) closeDB(ctx context.Context, id uint64, req *pb.CloseDb) {
 	}
 	delete(c.dbs, req.GetDbId())
 	c.s.holders.remove(db.key, c)
+	c.send(ctx, &pb.ServerFrame{RequestId: id, Body: &pb.ServerFrame_Ok{Ok: &pb.Ok{}}})
+}
+
+// deleteDB deletes a database of this connection's subject. The database must not be open on this connection. The
+// holder of an earlier lease on this server instance receives LeaseRevoked right away.
+func (c *connection) deleteDB(ctx context.Context, id uint64, req *pb.Delete) {
+	if err := checkDBID(req.GetDbId()); err != nil {
+		c.fail(ctx, id, err)
+		return
+	}
+	if _, ok := c.dbs[req.GetDbId()]; ok {
+		c.fail(ctx, id, store.BadRequest("database %q is open on this connection; close it first", req.GetDbId()))
+		return
+	}
+	key := store.Key{Subject: c.subject, DBID: req.GetDbId()}
+	res, err := c.s.opts.Store.Delete(ctx, store.DeleteRequest{Key: key, Takeover: req.GetTakeover(), Now: c.s.opts.Now()})
+	if err != nil {
+		c.fail(ctx, id, err)
+		return
+	}
+	if res.Epoch > 0 {
+		c.s.holders.revoke(key, res.Epoch)
+		c.log.Info("database deleted", "db", req.GetDbId(), "revoked", res.Revoked)
+	}
 	c.send(ctx, &pb.ServerFrame{RequestId: id, Body: &pb.ServerFrame_Ok{Ok: &pb.Ok{}}})
 }
 

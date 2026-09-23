@@ -83,7 +83,7 @@ const createDatabase = `-- name: CreateDatabase :one
 INSERT INTO databases (subject, db_id, page_size)
 VALUES ($1, $2, $3)
 ON CONFLICT (subject, db_id) DO NOTHING
-RETURNING subject, db_id, page_size, page_count, version, last_commit_id, lease_epoch, lease_id, lease_holder, lease_granted, lease_expires
+RETURNING subject, db_id, page_size, page_count, version, last_commit_id, lease_epoch, lease_id, lease_holder, lease_granted, lease_expires, deleted
 `
 
 type CreateDatabaseParams struct {
@@ -108,6 +108,7 @@ func (q *Queries) CreateDatabase(ctx context.Context, arg CreateDatabaseParams) 
 		&i.LeaseHolder,
 		&i.LeaseGranted,
 		&i.LeaseExpires,
+		&i.Deleted,
 	)
 	return i, err
 }
@@ -142,6 +143,50 @@ type DeleteBlocksFromParams struct {
 func (q *Queries) DeleteBlocksFrom(ctx context.Context, arg DeleteBlocksFromParams) error {
 	_, err := q.db.Exec(ctx, deleteBlocksFrom, arg.Subject, arg.DbID, arg.Idx)
 	return err
+}
+
+const deleteChanges = `-- name: DeleteChanges :exec
+DELETE FROM changes
+WHERE subject = $1 AND db_id = $2
+`
+
+type DeleteChangesParams struct {
+	Subject string
+	DbID    string
+}
+
+func (q *Queries) DeleteChanges(ctx context.Context, arg DeleteChangesParams) error {
+	_, err := q.db.Exec(ctx, deleteChanges, arg.Subject, arg.DbID)
+	return err
+}
+
+const deleteDatabase = `-- name: DeleteDatabase :one
+UPDATE databases
+SET deleted = true,
+    page_count = 0,
+    version = version + 1,
+    last_commit_id = NULL,
+    lease_epoch = lease_epoch + 1,
+    lease_id = NULL,
+    lease_holder = NULL,
+    lease_granted = NULL,
+    lease_expires = NULL
+WHERE subject = $1 AND db_id = $2
+RETURNING lease_epoch
+`
+
+type DeleteDatabaseParams struct {
+	Subject string
+	DbID    string
+}
+
+// DeleteDatabase marks a database as deleted and empties its state. It increases the lease epoch and the version and
+// removes the lease, so that no earlier lease can commit again.
+func (q *Queries) DeleteDatabase(ctx context.Context, arg DeleteDatabaseParams) (int64, error) {
+	row := q.db.QueryRow(ctx, deleteDatabase, arg.Subject, arg.DbID)
+	var lease_epoch int64
+	err := row.Scan(&lease_epoch)
+	return lease_epoch, err
 }
 
 const extendLease = `-- name: ExtendLease :execrows
@@ -220,7 +265,7 @@ func (q *Queries) FetchBlocks(ctx context.Context, arg FetchBlocksParams) ([]Fet
 }
 
 const getDatabase = `-- name: GetDatabase :one
-SELECT subject, db_id, page_size, page_count, version, last_commit_id, lease_epoch, lease_id, lease_holder, lease_granted, lease_expires FROM databases
+SELECT subject, db_id, page_size, page_count, version, last_commit_id, lease_epoch, lease_id, lease_holder, lease_granted, lease_expires, deleted FROM databases
 WHERE subject = $1 AND db_id = $2
 `
 
@@ -244,6 +289,7 @@ func (q *Queries) GetDatabase(ctx context.Context, arg GetDatabaseParams) (Datab
 		&i.LeaseHolder,
 		&i.LeaseGranted,
 		&i.LeaseExpires,
+		&i.Deleted,
 	)
 	return i, err
 }
@@ -284,7 +330,7 @@ func (q *Queries) GrantLease(ctx context.Context, arg GrantLeaseParams) (int64, 
 
 const lockDatabase = `-- name: LockDatabase :one
 
-SELECT subject, db_id, page_size, page_count, version, last_commit_id, lease_epoch, lease_id, lease_holder, lease_granted, lease_expires FROM databases
+SELECT subject, db_id, page_size, page_count, version, last_commit_id, lease_epoch, lease_id, lease_holder, lease_granted, lease_expires, deleted FROM databases
 WHERE subject = $1 AND db_id = $2
 FOR UPDATE
 `
@@ -312,12 +358,13 @@ func (q *Queries) LockDatabase(ctx context.Context, arg LockDatabaseParams) (Dat
 		&i.LeaseHolder,
 		&i.LeaseGranted,
 		&i.LeaseExpires,
+		&i.Deleted,
 	)
 	return i, err
 }
 
 const oldestChange = `-- name: OldestChange :one
-SELECT min(version)::bigint FROM changes
+SELECT coalesce(min(version), 0)::bigint FROM changes
 WHERE subject = $1 AND db_id = $2
 `
 
@@ -326,7 +373,8 @@ type OldestChangeParams struct {
 	DbID    string
 }
 
-// OldestChange returns the oldest version in the change log, or null if the log is empty.
+// OldestChange returns the oldest version in the change log, or 0 if the log is empty. The log is empty for a
+// database created anew after a deletion, and for one whose commits all predate the change log.
 func (q *Queries) OldestChange(ctx context.Context, arg OldestChangeParams) (int64, error) {
 	row := q.db.QueryRow(ctx, oldestChange, arg.Subject, arg.DbID)
 	var column_1 int64
@@ -394,4 +442,39 @@ func (q *Queries) ReleaseLease(ctx context.Context, arg ReleaseLeaseParams) (int
 		return 0, err
 	}
 	return result.RowsAffected(), nil
+}
+
+const reviveDatabase = `-- name: ReviveDatabase :one
+UPDATE databases
+SET deleted = false,
+    page_size = $3
+WHERE subject = $1 AND db_id = $2
+RETURNING subject, db_id, page_size, page_count, version, last_commit_id, lease_epoch, lease_id, lease_holder, lease_granted, lease_expires, deleted
+`
+
+type ReviveDatabaseParams struct {
+	Subject  string
+	DbID     string
+	PageSize int32
+}
+
+// ReviveDatabase creates a deleted database anew, empty, with the given page size. Epoch and version continue.
+func (q *Queries) ReviveDatabase(ctx context.Context, arg ReviveDatabaseParams) (Database, error) {
+	row := q.db.QueryRow(ctx, reviveDatabase, arg.Subject, arg.DbID, arg.PageSize)
+	var i Database
+	err := row.Scan(
+		&i.Subject,
+		&i.DbID,
+		&i.PageSize,
+		&i.PageCount,
+		&i.Version,
+		&i.LastCommitID,
+		&i.LeaseEpoch,
+		&i.LeaseID,
+		&i.LeaseHolder,
+		&i.LeaseGranted,
+		&i.LeaseExpires,
+		&i.Deleted,
+	)
+	return i, err
 }

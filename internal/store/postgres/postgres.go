@@ -48,11 +48,16 @@ func (s *Store) Open(ctx context.Context, req store.OpenRequest) (store.OpenResu
 		row, err := q.LockDatabase(ctx, db.LockDatabaseParams{Subject: req.Key.Subject, DbID: req.Key.DBID})
 		if errors.Is(err, pgx.ErrNoRows) {
 			row, err = createDatabase(ctx, q, req)
-		} else if err == nil && req.PageSize != 0 && uint32(row.PageSize) != req.PageSize {
-			return store.BadRequest("page size %d, the database has %d", req.PageSize, row.PageSize)
 		}
 		if err != nil {
 			return err
+		}
+		if row.Deleted {
+			if row, err = reviveDatabase(ctx, q, req); err != nil {
+				return err
+			}
+		} else if req.PageSize != 0 && uint32(row.PageSize) != req.PageSize {
+			return store.BadRequest("page size %d, the database has %d", req.PageSize, row.PageSize)
 		}
 
 		if req.Resume != nil {
@@ -122,6 +127,25 @@ func createDatabase(ctx context.Context, q *db.Queries, req store.OpenRequest) (
 	return row, err
 }
 
+// reviveDatabase creates a deleted database anew, empty. Its lease epoch and version continue, so no lease on the
+// deleted database can commit to the new one. A deleted database cannot be resumed and is not found without Create.
+func reviveDatabase(ctx context.Context, q *db.Queries, req store.OpenRequest) (db.Database, error) {
+	switch {
+	case req.Resume != nil:
+		return db.Database{}, store.ErrFenced
+	case !req.Create:
+		return db.Database{}, store.ErrNotFound
+	case !store.ValidPageSize(req.PageSize):
+		return db.Database{}, store.BadRequest("page size %d is not a power of two from %d to %d",
+			req.PageSize, store.MinPageSize, store.MaxPageSize)
+	}
+	return q.ReviveDatabase(ctx, db.ReviveDatabaseParams{
+		Subject:  req.Key.Subject,
+		DbID:     req.Key.DBID,
+		PageSize: int32(req.PageSize),
+	})
+}
+
 // Fetch implements store.Store.
 func (s *Store) Fetch(ctx context.Context, key store.Key, version, first, count uint64) ([][]byte, error) {
 	// Read the state and the blocks from one snapshot, so a concurrent commit cannot mix two versions.
@@ -138,6 +162,9 @@ func (s *Store) Fetch(ctx context.Context, key store.Key, version, first, count 
 	}
 	if err != nil {
 		return nil, err
+	}
+	if row.Deleted {
+		return nil, store.ErrNotFound
 	}
 	if version != uint64(row.Version) {
 		return nil, &store.VersionConflictError{Current: uint64(row.Version)}
@@ -291,7 +318,7 @@ func (s *Store) Changes(ctx context.Context, key store.Key, fromVersion uint64) 
 	var set store.ChangeSet
 	err := s.inTx(ctx, func(q *db.Queries) error {
 		row, err := q.GetDatabase(ctx, db.GetDatabaseParams{Subject: key.Subject, DbID: key.DBID})
-		if errors.Is(err, pgx.ErrNoRows) {
+		if errors.Is(err, pgx.ErrNoRows) || err == nil && row.Deleted {
 			return store.ErrNotFound
 		}
 		if err != nil {
@@ -363,6 +390,46 @@ func (s *Store) Release(ctx context.Context, key store.Key, epoch uint64) error 
 		return err
 	}
 	return s.whyNoRow(ctx, key, rows)
+}
+
+func (s *Store) Delete(ctx context.Context, req store.DeleteRequest) (store.DeleteResult, error) {
+	var result store.DeleteResult
+	err := s.inTx(ctx, func(q *db.Queries) error {
+		row, err := q.LockDatabase(ctx, db.LockDatabaseParams{Subject: req.Key.Subject, DbID: req.Key.DBID})
+		if errors.Is(err, pgx.ErrNoRows) {
+			return nil
+		}
+		if err != nil {
+			return err
+		}
+		if row.Deleted {
+			return nil
+		}
+		active := row.LeaseHolder != nil && row.LeaseExpires.Valid && req.Now.Before(row.LeaseExpires.Time)
+		if active && !req.Takeover {
+			return &store.LeaseHeldError{Since: row.LeaseGranted.Time}
+		}
+		if err := q.DeleteBlocksFrom(ctx, db.DeleteBlocksFromParams{
+			Subject: req.Key.Subject,
+			DbID:    req.Key.DBID,
+			Idx:     0,
+		}); err != nil {
+			return err
+		}
+		if err := q.DeleteChanges(ctx, db.DeleteChangesParams{Subject: req.Key.Subject, DbID: req.Key.DBID}); err != nil {
+			return err
+		}
+		epoch, err := q.DeleteDatabase(ctx, db.DeleteDatabaseParams{Subject: req.Key.Subject, DbID: req.Key.DBID})
+		if err != nil {
+			return err
+		}
+		result = store.DeleteResult{Epoch: uint64(epoch), Revoked: active}
+		return nil
+	})
+	if err != nil {
+		return store.DeleteResult{}, err
+	}
+	return result, nil
 }
 
 // whyNoRow returns the error for a lease update that matched no row: ErrNotFound if the database does not exist,

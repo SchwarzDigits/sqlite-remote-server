@@ -89,7 +89,36 @@ SELECT version, blocks FROM changes
 WHERE subject = $1 AND db_id = $2 AND version > $3
 ORDER BY version;
 
--- OldestChange returns the oldest version in the change log, or null if the log is empty.
+-- OldestChange returns the oldest version in the change log, or 0 if the log is empty. The log is empty for a
+-- database created anew after a deletion, and for one whose commits all predate the change log.
 -- name: OldestChange :one
-SELECT min(version)::bigint FROM changes
+SELECT coalesce(min(version), 0)::bigint FROM changes
 WHERE subject = $1 AND db_id = $2;
+
+-- DeleteDatabase marks a database as deleted and empties its state. It increases the lease epoch and the version and
+-- removes the lease, so that no earlier lease can commit again.
+-- name: DeleteDatabase :one
+UPDATE databases
+SET deleted = true,
+    page_count = 0,
+    version = version + 1,
+    last_commit_id = NULL,
+    lease_epoch = lease_epoch + 1,
+    lease_id = NULL,
+    lease_holder = NULL,
+    lease_granted = NULL,
+    lease_expires = NULL
+WHERE subject = $1 AND db_id = $2
+RETURNING lease_epoch;
+
+-- name: DeleteChanges :exec
+DELETE FROM changes
+WHERE subject = $1 AND db_id = $2;
+
+-- ReviveDatabase creates a deleted database anew, empty, with the given page size. Epoch and version continue.
+-- name: ReviveDatabase :one
+UPDATE databases
+SET deleted = false,
+    page_size = $3
+WHERE subject = $1 AND db_id = $2
+RETURNING *;

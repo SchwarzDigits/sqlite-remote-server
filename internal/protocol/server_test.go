@@ -587,3 +587,62 @@ func TestFetchRejectsRangesOutOfOrder(t *testing.T) {
 	require.NotNil(t, answer.GetError(), "answer %v", answer)
 	require.Equal(t, pb.ErrorCode_ERROR_CODE_BAD_REQUEST, answer.GetError().GetCode())
 }
+
+func deleteFrame(db string, takeover bool) *pb.ClientFrame {
+	return &pb.ClientFrame{Body: &pb.ClientFrame_Delete{Delete: &pb.Delete{DbId: db, Takeover: takeover}}}
+}
+
+func TestDeleteRevokesHolderAndDatabaseComesBackEmpty(t *testing.T) {
+	e := start(t)
+	a := e.connect(t, 0xa)
+	a.hello("alice")
+	a.open(testDB, true, false)
+	answer := a.call(commitFrame(1, 0, 2, commitIDOf(1), block(0, 0xa0), block(1, 0xa1)))
+	require.NotNil(t, answer.GetCommitAck(), "answer %v", answer)
+
+	b := e.connect(t, 0xb)
+	b.hello("alice")
+	answer = b.call(deleteFrame(testDB, true))
+	require.NotNil(t, answer.GetOk(), "answer %v", answer)
+
+	push := a.recv()
+	require.Equal(t, uint64(0), push.GetRequestId())
+	require.Equal(t, testDB, push.GetLeaseRevoked().GetDbId(), "push %v", push)
+	answer = a.call(commitFrame(1, 1, 2, commitIDOf(2), block(0, 0xa2)))
+	requireError(t, answer, pb.ErrorCode_ERROR_CODE_FENCED)
+
+	requireError(t, b.call(openFrame(testDB, false, false, nil)), pb.ErrorCode_ERROR_CODE_NOT_FOUND)
+	opened := b.open(testDB, true, false)
+	require.Zero(t, opened.GetPageCount(), "the database comes back empty")
+	require.Greater(t, opened.GetVersion(), uint64(1), "the version continues")
+	require.Greater(t, opened.GetLeaseEpoch(), push.GetLeaseRevoked().GetNewLeaseEpoch(), "the epoch continues")
+}
+
+func TestDeleteNeedsTakeoverWhileLeaseIsHeld(t *testing.T) {
+	e := start(t)
+	a := e.connect(t, 0xa)
+	a.hello("alice")
+	a.open(testDB, true, false)
+
+	b := e.connect(t, 0xb)
+	b.hello("alice")
+	requireError(t, b.call(deleteFrame(testDB, false)), pb.ErrorCode_ERROR_CODE_LEASE_HELD)
+}
+
+func TestDeleteOfOpenDatabaseIsRejected(t *testing.T) {
+	e := start(t)
+	c := e.connect(t, 0xa)
+	c.hello("alice")
+	c.open(testDB, true, false)
+	requireError(t, c.call(deleteFrame(testDB, true)), pb.ErrorCode_ERROR_CODE_BAD_REQUEST)
+}
+
+func TestDeleteOfMissingDatabaseSucceeds(t *testing.T) {
+	e := start(t)
+	c := e.connect(t, 0xa)
+	c.hello("alice")
+	for range 2 {
+		answer := c.call(deleteFrame("never-created", false))
+		require.NotNil(t, answer.GetOk(), "answer %v", answer)
+	}
+}

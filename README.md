@@ -21,6 +21,9 @@ Status: works and is tested, not yet in production use. Versions are 0.x: the pr
   and no setting turns the login off.
 - **Change log.** For the last 1024 commits the server keeps the indexes of the blocks each commit changed. A client
   whose local copy is a few commits behind discards only those blocks instead of the whole copy.
+- **Deletion.** A client can delete a database it does not have open. The server removes the blocks and the change
+  log but keeps a record with the lease epoch and the version, and increases both. If the database is created again,
+  epoch and version continue, so no lease on the deleted database can ever commit to the new one.
 - **Storage.** In memory for tests, or in PostgreSQL.
 
 ## Running
