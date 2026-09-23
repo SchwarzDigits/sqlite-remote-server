@@ -1,0 +1,10 @@
+# Build output
+/sqlite-remote-server
+*.test
+*.out
+coverage.*
+
+# Editors and operating systems
+.idea/
+.vscode/
+.DS_Store

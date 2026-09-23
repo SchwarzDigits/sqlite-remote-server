@@ -1,0 +1,14 @@
+version: v2
+clean: true
+managed:
+  enabled: true
+  override:
+    # The .proto file has no Go options. The Go package path is set here.
+    - file_option: go_package_prefix
+      value: github.com/SchwarzDigits/sqlite-remote-server/internal/gen
+plugins:
+  - local: ["go", "tool", "protoc-gen-go"]
+    out: internal/gen
+    opt: paths=source_relative
+inputs:
+  - directory: proto
