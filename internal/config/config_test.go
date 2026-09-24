@@ -58,12 +58,21 @@ func TestPostgresRequiresDatabaseURL(t *testing.T) {
 	t.Setenv(config.EnvDatabaseURL, "postgres://user:secret@db:5432/vfs")
 	t.Setenv(config.EnvDBMaxConns, "20")
 	t.Setenv(config.EnvDBMinConns, "2")
+	t.Setenv(config.EnvRequireSyncReplication, "true")
 	cfg, err := config.Load()
 	require.NoError(t, err)
+	require.True(t, cfg.Server.RequireSyncReplication)
 	require.Equal(t, server.StorePostgres, cfg.Server.Store)
 	require.Equal(t, "postgres://user:secret@db:5432/vfs", cfg.Server.DatabaseURL)
 	require.Equal(t, int32(20), cfg.Server.DBMaxConns)
 	require.Equal(t, int32(2), cfg.Server.DBMinConns)
+}
+
+func TestRequireSyncReplicationNeedsPostgres(t *testing.T) {
+	setMinimal(t)
+	t.Setenv(config.EnvRequireSyncReplication, "true")
+	_, err := config.Load()
+	require.ErrorContains(t, err, config.EnvRequireSyncReplication)
 }
 
 func TestAllowedOrigins(t *testing.T) {
@@ -102,6 +111,7 @@ func TestInvalidVariableIsNamedInError(t *testing.T) {
 		{config.EnvDBMaxConns, "some"},
 		{config.EnvDBMinConns, "-1"},
 		{config.EnvDBMinConns, "21"},
+		{config.EnvRequireSyncReplication, "yes please"},
 	} {
 		t.Run(tc.name+"="+tc.value, func(t *testing.T) {
 			setMinimal(t)

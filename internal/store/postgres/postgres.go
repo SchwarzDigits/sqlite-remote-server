@@ -36,6 +36,24 @@ type Store struct {
 
 var _ store.Store = (*Store)(nil)
 
+// PoolConfig parses the connection string for the store's pool. Its connections commit with synchronous_commit on,
+// whatever the database's default is: a commit then waits for the WAL to be flushed locally and, if synchronous
+// standbys are configured, on them. A commit that the server has acknowledged must survive a crash.
+func PoolConfig(databaseURL string) (*pgxpool.Config, error) {
+	cfg, err := pgxpool.ParseConfig(databaseURL)
+	if err != nil {
+		return nil, err
+	}
+	cfg.ConnConfig.RuntimeParams["synchronous_commit"] = "on"
+	return cfg, nil
+}
+
+// SyncStandbyNames returns PostgreSQL's synchronous_standby_names. If it is empty, commits are not replicated
+// synchronously, and a failover to a replica or a restore from a backup can lose acknowledged commits.
+func SyncStandbyNames(ctx context.Context, pool *pgxpool.Pool) (string, error) {
+	return db.New(pool).SyncStandbyNames(ctx)
+}
+
 // New returns a store that uses pool. The schema must be up to date. See Migrate.
 func New(pool *pgxpool.Pool) *Store {
 	return &Store{pool: pool, q: db.New(pool)}

@@ -67,6 +67,7 @@ it, so clients should use a separate login key for each server.
 | `SQLITE_REMOTE_STORE` | yes | | `memory` or `postgres`. There is no default, so a server cannot run on the memory store by accident |
 | `SQLITE_REMOTE_DATABASE_URL` | with `postgres` | | PostgreSQL connection string |
 | `SQLITE_REMOTE_DB_MAX_CONNS`, `SQLITE_REMOTE_DB_MIN_CONNS` | no | pgxpool default | connection pool size |
+| `SQLITE_REMOTE_REQUIRE_SYNC_REPLICATION` | no | `false` | `true`: refuse to start unless PostgreSQL replicates commits synchronously, see [Durability](#durability) |
 | `SQLITE_REMOTE_ALLOWED_ORIGINS` | no | same origin only | comma-separated hosts from which browser pages may connect. `*` matches any part of a host, e.g. `*.example.com` or `127.0.0.1:*` |
 | `SQLITE_REMOTE_LOG_LEVEL` | no | `info` | `debug`, `info`, `warn` or `error` |
 | `SQLITE_REMOTE_MAX_FRAME_BYTES` | no | 1 MiB | largest frame, at least 65 KiB so that a block of the largest page size fits |
@@ -99,6 +100,22 @@ PostgreSQL writes a new row version. If it fits on the same page (a HOT update),
 without VACUUM. Whole 4 KB blocks are stored in the TOAST table instead, where every old version remains until the
 next VACUUM: under constant load such a table grew to about 6 GB in two minutes. With block parts its size stays
 constant under the same load. This needs only the table option, no setting on the PostgreSQL server.
+
+### Durability
+
+A client relies on an acknowledged commit: it does not keep the data elsewhere. The server acknowledges a commit after
+PostgreSQL has committed it, and its connections use `synchronous_commit = on` whatever the database's default is. A
+commit is therefore in PostgreSQL's write-ahead log on disk before it is acknowledged, and survives a crash of
+PostgreSQL, as long as `fsync` is on (its default).
+
+A failover to a replica or a restore from a backup can still lose acknowledged commits, and clients would continue
+from an older state without noticing. To avoid that:
+
+- Configure synchronous replication (`synchronous_standby_names`). PostgreSQL then commits only once a standby has
+  the commit. The server logs at start whether commits are replicated synchronously.
+  `SQLITE_REMOTE_REQUIRE_SYNC_REPLICATION=true` makes it refuse to start otherwise. With synchronous replication, a
+  commit waits while no standby is available; the client's commit then times out and is not acknowledged.
+- Restore backups with point-in-time recovery to the latest state, not from a periodic dump.
 
 ## Development
 

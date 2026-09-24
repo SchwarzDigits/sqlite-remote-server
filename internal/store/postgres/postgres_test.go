@@ -10,6 +10,7 @@ import (
 	"crypto/rand"
 	"encoding/hex"
 	"fmt"
+	"net/url"
 	"os"
 	"strings"
 	"sync"
@@ -29,7 +30,7 @@ import (
 
 const envTestDatabaseURL = "SQLITE_REMOTE_TEST_DATABASE_URL"
 
-func testPool(t *testing.T) *pgxpool.Pool {
+func testDatabaseURL(t *testing.T) string {
 	t.Helper()
 	if testing.Short() {
 		t.Skip("integration test: skipped with -short")
@@ -38,11 +39,53 @@ func testPool(t *testing.T) *pgxpool.Pool {
 	if uri == "" {
 		t.Skipf("integration test: %s is not set", envTestDatabaseURL)
 	}
-	pool, err := pgxpool.New(t.Context(), uri)
+	return uri
+}
+
+func testPool(t *testing.T) *pgxpool.Pool {
+	t.Helper()
+	pool, err := pgxpool.New(t.Context(), testDatabaseURL(t))
 	require.NoError(t, err)
 	t.Cleanup(pool.Close)
 	require.NoError(t, postgres.Migrate(t.Context(), pool))
 	return pool
+}
+
+func setting(t *testing.T, pool *pgxpool.Pool, name string) string {
+	t.Helper()
+	var value string
+	require.NoError(t, pool.QueryRow(t.Context(), "SELECT current_setting($1)", name).Scan(&value))
+	return value
+}
+
+// The connection string turns synchronous_commit off, as a database default could. The store's connections must
+// commit synchronously anyway.
+func TestPoolConfigCommitsSynchronously(t *testing.T) {
+	u, err := url.Parse(testDatabaseURL(t))
+	require.NoError(t, err)
+	query := u.Query()
+	query.Set("options", "-c synchronous_commit=off")
+	// pgx does not decode "+" as a space.
+	u.RawQuery = strings.ReplaceAll(query.Encode(), "+", "%20")
+
+	plain, err := pgxpool.New(t.Context(), u.String())
+	require.NoError(t, err)
+	defer plain.Close()
+	require.Equal(t, "off", setting(t, plain, "synchronous_commit"), "the option must take effect")
+
+	cfg, err := postgres.PoolConfig(u.String())
+	require.NoError(t, err)
+	pool, err := pgxpool.NewWithConfig(t.Context(), cfg)
+	require.NoError(t, err)
+	defer pool.Close()
+	require.Equal(t, "on", setting(t, pool, "synchronous_commit"))
+}
+
+func TestSyncStandbyNames(t *testing.T) {
+	pool := testPool(t)
+	names, err := postgres.SyncStandbyNames(t.Context(), pool)
+	require.NoError(t, err)
+	require.Equal(t, setting(t, pool, "synchronous_standby_names"), names)
 }
 
 func TestContract(t *testing.T) {

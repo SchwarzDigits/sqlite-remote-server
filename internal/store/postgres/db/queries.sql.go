@@ -478,3 +478,16 @@ func (q *Queries) ReviveDatabase(ctx context.Context, arg ReviveDatabaseParams) 
 	)
 	return i, err
 }
+
+const syncStandbyNames = `-- name: SyncStandbyNames :one
+SELECT current_setting('synchronous_standby_names')::text
+`
+
+// SyncStandbyNames returns synchronous_standby_names. It is empty if PostgreSQL does not replicate commits
+// synchronously.
+func (q *Queries) SyncStandbyNames(ctx context.Context) (string, error) {
+	row := q.db.QueryRow(ctx, syncStandbyNames)
+	var column_1 string
+	err := row.Scan(&column_1)
+	return column_1, err
+}

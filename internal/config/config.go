@@ -16,18 +16,20 @@ import (
 
 // Environment variable names.
 const (
-	EnvPort           = "SQLITE_REMOTE_PORT"
-	EnvLogLevel       = "SQLITE_REMOTE_LOG_LEVEL"
-	EnvServerID       = "SQLITE_REMOTE_SERVER_ID"
-	EnvStore          = "SQLITE_REMOTE_STORE"
-	EnvDatabaseURL    = "SQLITE_REMOTE_DATABASE_URL"
-	EnvDBMaxConns     = "SQLITE_REMOTE_DB_MAX_CONNS"
-	EnvDBMinConns     = "SQLITE_REMOTE_DB_MIN_CONNS"
-	EnvMaxFrameBytes  = "SQLITE_REMOTE_MAX_FRAME_BYTES"
-	EnvMaxCommitBytes = "SQLITE_REMOTE_MAX_COMMIT_BYTES"
-	EnvPingInterval   = "SQLITE_REMOTE_PING_INTERVAL"
-	EnvLeaseTTL       = "SQLITE_REMOTE_LEASE_TTL"
-	EnvHelloTimeout   = "SQLITE_REMOTE_HELLO_TIMEOUT"
+	EnvPort        = "SQLITE_REMOTE_PORT"
+	EnvLogLevel    = "SQLITE_REMOTE_LOG_LEVEL"
+	EnvServerID    = "SQLITE_REMOTE_SERVER_ID"
+	EnvStore       = "SQLITE_REMOTE_STORE"
+	EnvDatabaseURL = "SQLITE_REMOTE_DATABASE_URL"
+	EnvDBMaxConns  = "SQLITE_REMOTE_DB_MAX_CONNS"
+	EnvDBMinConns  = "SQLITE_REMOTE_DB_MIN_CONNS"
+	// EnvRequireSyncReplication is true or false.
+	EnvRequireSyncReplication = "SQLITE_REMOTE_REQUIRE_SYNC_REPLICATION"
+	EnvMaxFrameBytes          = "SQLITE_REMOTE_MAX_FRAME_BYTES"
+	EnvMaxCommitBytes         = "SQLITE_REMOTE_MAX_COMMIT_BYTES"
+	EnvPingInterval           = "SQLITE_REMOTE_PING_INTERVAL"
+	EnvLeaseTTL               = "SQLITE_REMOTE_LEASE_TTL"
+	EnvHelloTimeout           = "SQLITE_REMOTE_HELLO_TIMEOUT"
 	// EnvAllowedOrigins is a comma-separated list of host patterns.
 	EnvAllowedOrigins = "SQLITE_REMOTE_ALLOWED_ORIGINS"
 )
@@ -36,18 +38,19 @@ const defaultPort = 8080
 
 // envOf maps the fields of server.Config to the variables that set them, for error messages.
 var envOf = map[string]string{
-	"Addr":           EnvPort,
-	"ServerID":       EnvServerID,
-	"Store":          EnvStore,
-	"DatabaseURL":    EnvDatabaseURL,
-	"DBMaxConns":     EnvDBMaxConns,
-	"DBMinConns":     EnvDBMinConns,
-	"MaxFrameBytes":  EnvMaxFrameBytes,
-	"MaxCommitBytes": EnvMaxCommitBytes,
-	"PingInterval":   EnvPingInterval,
-	"LeaseTTL":       EnvLeaseTTL,
-	"HelloTimeout":   EnvHelloTimeout,
-	"AllowedOrigins": EnvAllowedOrigins,
+	"Addr":                   EnvPort,
+	"ServerID":               EnvServerID,
+	"Store":                  EnvStore,
+	"DatabaseURL":            EnvDatabaseURL,
+	"DBMaxConns":             EnvDBMaxConns,
+	"DBMinConns":             EnvDBMinConns,
+	"RequireSyncReplication": EnvRequireSyncReplication,
+	"MaxFrameBytes":          EnvMaxFrameBytes,
+	"MaxCommitBytes":         EnvMaxCommitBytes,
+	"PingInterval":           EnvPingInterval,
+	"LeaseTTL":               EnvLeaseTTL,
+	"HelloTimeout":           EnvHelloTimeout,
+	"AllowedOrigins":         EnvAllowedOrigins,
 }
 
 // Config is the configuration of the command.
@@ -86,6 +89,11 @@ func Load() (Config, error) {
 	}
 	if s.DBMinConns, err = connsVar(EnvDBMinConns); err != nil {
 		return Config{}, err
+	}
+	if v := os.Getenv(EnvRequireSyncReplication); v != "" {
+		if s.RequireSyncReplication, err = strconv.ParseBool(v); err != nil {
+			return Config{}, fmt.Errorf("%s: must be true or false, got %q", EnvRequireSyncReplication, v)
+		}
 	}
 	if err := uint32Var(EnvMaxFrameBytes, &s.MaxFrameBytes); err != nil {
 		return Config{}, err

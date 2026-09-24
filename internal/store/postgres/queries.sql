@@ -122,3 +122,8 @@ SET deleted = false,
     page_size = $3
 WHERE subject = $1 AND db_id = $2
 RETURNING *;
+
+-- SyncStandbyNames returns synchronous_standby_names. It is empty if PostgreSQL does not replicate commits
+-- synchronously.
+-- name: SyncStandbyNames :one
+SELECT current_setting('synchronous_standby_names')::text;

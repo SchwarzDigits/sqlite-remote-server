@@ -59,6 +59,10 @@ type Config struct {
 	// DBMaxConns and DBMinConns set the connection pool size. 0 keeps the pgxpool default.
 	DBMaxConns int32
 	DBMinConns int32
+	// RequireSyncReplication makes Run refuse to start unless PostgreSQL replicates commits synchronously, that is,
+	// unless synchronous_standby_names is set. A commit is then acknowledged only once a standby has it, so a failover
+	// does not lose acknowledged commits. Only for StorePostgres. Without it, Run logs a warning instead.
+	RequireSyncReplication bool
 
 	// MaxFrameBytes is the largest WebSocket frame accepted. It must hold one block of the largest page size.
 	MaxFrameBytes uint32
@@ -120,6 +124,8 @@ func (c Config) Validate() error {
 		return invalid("DBMinConns", "must not be negative, got %d", c.DBMinConns)
 	case c.DBMaxConns > 0 && c.DBMinConns > c.DBMaxConns:
 		return invalid("DBMinConns", "must not exceed the maximum pool size %d, got %d", c.DBMaxConns, c.DBMinConns)
+	case c.RequireSyncReplication && c.Store != StorePostgres:
+		return invalid("RequireSyncReplication", "needs the %s store", StorePostgres)
 	case c.MaxFrameBytes < minMaxFrameBytes:
 		return invalid("MaxFrameBytes", "must be at least %d to hold one block of the largest page size", minMaxFrameBytes)
 	case c.MaxCommitBytes < uint64(c.MaxFrameBytes):
@@ -178,7 +184,7 @@ func openStore(ctx context.Context, cfg Config, log *slog.Logger) (store.Store, 
 		return memory.New(), func() {}, nil
 	}
 
-	poolCfg, err := pgxpool.ParseConfig(cfg.DatabaseURL)
+	poolCfg, err := postgres.PoolConfig(cfg.DatabaseURL)
 	if err != nil {
 		return nil, nil, fmt.Errorf("database URL: %w", err)
 	}
@@ -198,5 +204,22 @@ func openStore(ctx context.Context, cfg Config, log *slog.Logger) (store.Store, 
 		return nil, nil, err
 	}
 	log.Info("database ready, migrations applied", "max_conns", poolCfg.MaxConns, "min_conns", poolCfg.MinConns)
+
+	standbys, err := postgres.SyncStandbyNames(ctx, pool)
+	if err != nil {
+		pool.Close()
+		return nil, nil, fmt.Errorf("read synchronous_standby_names: %w", err)
+	}
+	switch {
+	case standbys != "":
+		log.Info("commits are acknowledged after synchronous replication", "synchronous_standby_names", standbys)
+	case cfg.RequireSyncReplication:
+		pool.Close()
+		return nil, nil, invalid("RequireSyncReplication",
+			"PostgreSQL does not replicate commits synchronously: synchronous_standby_names is empty")
+	default:
+		log.Warn("commits are acknowledged without synchronous replication: " +
+			"a failover to a replica or a restore from a backup can lose acknowledged commits")
+	}
 	return postgres.New(pool), pool.Close, nil
 }

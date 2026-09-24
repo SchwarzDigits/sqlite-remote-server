@@ -7,9 +7,11 @@ import (
 	"log/slog"
 	"net"
 	"net/http"
+	"os"
 	"testing"
 	"time"
 
+	"github.com/jackc/pgx/v5"
 	"github.com/stretchr/testify/require"
 
 	"github.com/SchwarzDigits/sqlite-remote-server/server"
@@ -40,6 +42,7 @@ func TestValidateNamesTheField(t *testing.T) {
 		{"DatabaseURL", func(c *server.Config) { c.Store = server.StorePostgres }},
 		{"DBMaxConns", func(c *server.Config) { c.DBMaxConns = -1 }},
 		{"DBMinConns", func(c *server.Config) { c.DBMaxConns, c.DBMinConns = 2, 3 }},
+		{"RequireSyncReplication", func(c *server.Config) { c.RequireSyncReplication = true }},
 		{"MaxFrameBytes", func(c *server.Config) { c.MaxFrameBytes = 4096 }},
 		{"MaxCommitBytes", func(c *server.Config) { c.MaxCommitBytes = 1024 }},
 		{"PingInterval", func(c *server.Config) { c.PingInterval = 0 }},
@@ -61,6 +64,37 @@ func TestRunRejectsInvalidConfig(t *testing.T) {
 	var invalid *server.ConfigError
 	err := server.Run(context.Background(), server.DefaultConfig(), slog.New(slog.DiscardHandler))
 	require.ErrorAs(t, err, &invalid)
+}
+
+// Needs a PostgreSQL database without synchronous standbys in SQLITE_REMOTE_TEST_DATABASE_URL, as in CI.
+func TestRunRefusesWithoutSyncReplicationWhenRequired(t *testing.T) {
+	if testing.Short() {
+		t.Skip("integration test: skipped with -short")
+	}
+	uri := os.Getenv("SQLITE_REMOTE_TEST_DATABASE_URL")
+	if uri == "" {
+		t.Skip("integration test: SQLITE_REMOTE_TEST_DATABASE_URL is not set")
+	}
+	conn, err := pgx.Connect(t.Context(), uri)
+	require.NoError(t, err)
+	var standbys string
+	require.NoError(t, conn.QueryRow(t.Context(), "SHOW synchronous_standby_names").Scan(&standbys))
+	require.NoError(t, conn.Close(t.Context()))
+	if standbys != "" {
+		t.Skip("the test database replicates synchronously")
+	}
+
+	cfg := valid()
+	cfg.Addr = "127.0.0.1:0"
+	cfg.Store = server.StorePostgres
+	cfg.DatabaseURL = uri
+	cfg.RequireSyncReplication = true
+	// A server that starts anyway runs until the deadline and returns without the expected error.
+	ctx, cancel := context.WithTimeout(t.Context(), 10*time.Second)
+	defer cancel()
+	var invalid *server.ConfigError
+	require.ErrorAs(t, server.Run(ctx, cfg, slog.New(slog.DiscardHandler)), &invalid)
+	require.Equal(t, "RequireSyncReplication", invalid.Field)
 }
 
 func TestRunServesUntilCanceled(t *testing.T) {
