@@ -28,5 +28,5 @@ func run() error {
 	}
 	ctx, stop := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
 	defer stop()
-	return server.Run(ctx, cfg.Server, platform.NewLogger(cfg.LogLevel))
+	return config.Named(server.Run(ctx, cfg.Server, platform.NewLogger(cfg.LogLevel)))
 }

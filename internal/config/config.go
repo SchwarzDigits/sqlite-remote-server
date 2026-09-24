@@ -116,15 +116,21 @@ func Load() (Config, error) {
 	}
 
 	if err := s.Validate(); err != nil {
-		var invalid *server.ConfigError
-		if errors.As(err, &invalid) {
-			if name, ok := envOf[invalid.Field]; ok {
-				return Config{}, fmt.Errorf("%s: %s", name, invalid.Problem)
-			}
-		}
-		return Config{}, err
+		return Config{}, Named(err)
 	}
 	return cfg, nil
+}
+
+// Named replaces the field name in a *server.ConfigError with the variable that sets the field. server.Run returns
+// such errors too, for checks it can only make at start. Other errors, and nil, are returned unchanged.
+func Named(err error) error {
+	var invalid *server.ConfigError
+	if errors.As(err, &invalid) {
+		if name, ok := envOf[invalid.Field]; ok {
+			return fmt.Errorf("%s: %s", name, invalid.Problem)
+		}
+	}
+	return err
 }
 
 // connsVar reads a pool size. An unset variable means 0, which keeps the pgxpool default.

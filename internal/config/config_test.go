@@ -1,6 +1,7 @@
 package config_test
 
 import (
+	"errors"
 	"log/slog"
 	"testing"
 	"time"
@@ -73,6 +74,15 @@ func TestRequireSyncReplicationNeedsPostgres(t *testing.T) {
 	t.Setenv(config.EnvRequireSyncReplication, "true")
 	_, err := config.Load()
 	require.ErrorContains(t, err, config.EnvRequireSyncReplication)
+}
+
+func TestNamedReplacesTheFieldWithTheVariable(t *testing.T) {
+	err := config.Named(&server.ConfigError{Field: "RequireSyncReplication", Problem: "no standbys"})
+	require.EqualError(t, err, config.EnvRequireSyncReplication+": no standbys")
+
+	other := errors.New("connection refused")
+	require.Equal(t, other, config.Named(other))
+	require.NoError(t, config.Named(nil))
 }
 
 func TestAllowedOrigins(t *testing.T) {
