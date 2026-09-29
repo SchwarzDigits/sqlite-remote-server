@@ -254,13 +254,42 @@ func (s *Store) Delete(_ context.Context, req store.DeleteRequest) (store.Delete
 	if active && !req.Takeover {
 		return store.DeleteResult{}, &store.LeaseHeldError{Since: db.grantedAt}
 	}
+	db.remove()
+	return store.DeleteResult{Epoch: db.lease.Epoch, Revoked: active}, nil
+}
+
+// DeleteUnused implements store.Store.
+func (s *Store) DeleteUnused(_ context.Context, cutoff time.Time, limit int) ([]store.Key, error) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+
+	var unused []store.Key
+	for k, db := range s.dbs {
+		if !db.deleted && db.expiresAt.Before(cutoff) {
+			unused = append(unused, k)
+		}
+	}
+	slices.SortFunc(unused, func(a, b store.Key) int {
+		return s.dbs[a].expiresAt.Compare(s.dbs[b].expiresAt)
+	})
+	if len(unused) > limit {
+		unused = unused[:limit]
+	}
+	for _, k := range unused {
+		s.dbs[k].remove()
+	}
+	return unused, nil
+}
+
+// remove deletes the database's content and fences every lease. The record stays, so that epoch and version continue
+// if the database is created again.
+func (db *database) remove() {
 	db.deleted = true
 	db.blocks = make(map[uint64][]byte)
 	db.changes = nil
 	db.state = store.State{PageSize: db.state.PageSize, Version: db.state.Version + 1}
 	db.lease = store.Lease{Epoch: db.lease.Epoch + 1}
 	db.holder = nil
-	return store.DeleteResult{Epoch: db.lease.Epoch, Revoked: active}, nil
 }
 
 // Ping implements store.Store. It always succeeds.

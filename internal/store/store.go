@@ -145,6 +145,11 @@ type Store interface {
 	// created anew. Deleting a missing or deleted database succeeds and changes nothing. A deleted database behaves
 	// as missing, except that Open with Resume returns ErrFenced and Open with Create continues epoch and version.
 	Delete(ctx context.Context, req DeleteRequest) (DeleteResult, error)
+	// DeleteUnused deletes, as Delete does, up to limit databases whose lease expired before cutoff, oldest first,
+	// and returns their keys. Every open, commit and lease renewal extends the lease, so its expiry marks the last
+	// use of the database. A database whose lease expires at or after cutoff is kept. Several callers may run at
+	// once; each database is deleted by one of them.
+	DeleteUnused(ctx context.Context, cutoff time.Time, limit int) ([]Key, error)
 	// Ping checks that the store is reachable. The readiness endpoint uses it.
 	Ping(ctx context.Context) error
 }

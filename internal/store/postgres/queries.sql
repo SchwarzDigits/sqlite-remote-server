@@ -111,6 +111,15 @@ SET deleted = true,
 WHERE subject = $1 AND db_id = $2
 RETURNING lease_epoch;
 
+-- UnusedDatabases returns up to $2 databases whose lease expired before $1, oldest first. It takes no lock: the caller
+-- locks each row and checks it again before deleting. No index covers lease_expires, because every commit and lease
+-- renewal updates it, and an index on it would prevent HOT updates of the row. A sweep reads the whole table.
+-- name: UnusedDatabases :many
+SELECT subject, db_id FROM databases
+WHERE NOT deleted AND lease_expires < $1
+ORDER BY lease_expires
+LIMIT $2;
+
 -- name: DeleteChanges :exec
 DELETE FROM changes
 WHERE subject = $1 AND db_id = $2;

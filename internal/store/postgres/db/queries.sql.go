@@ -491,3 +491,43 @@ func (q *Queries) SyncStandbyNames(ctx context.Context) (string, error) {
 	err := row.Scan(&column_1)
 	return column_1, err
 }
+
+const unusedDatabases = `-- name: UnusedDatabases :many
+SELECT subject, db_id FROM databases
+WHERE NOT deleted AND lease_expires < $1
+ORDER BY lease_expires
+LIMIT $2
+`
+
+type UnusedDatabasesParams struct {
+	LeaseExpires pgtype.Timestamptz
+	Limit        int32
+}
+
+type UnusedDatabasesRow struct {
+	Subject string
+	DbID    string
+}
+
+// UnusedDatabases returns up to $2 databases whose lease expired before $1, oldest first. It takes no lock: the caller
+// locks each row and checks it again before deleting. No index covers lease_expires, because every commit and lease
+// renewal updates it, and an index on it would prevent HOT updates of the row. A sweep reads the whole table.
+func (q *Queries) UnusedDatabases(ctx context.Context, arg UnusedDatabasesParams) ([]UnusedDatabasesRow, error) {
+	rows, err := q.db.Query(ctx, unusedDatabases, arg.LeaseExpires, arg.Limit)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	var items []UnusedDatabasesRow
+	for rows.Next() {
+		var i UnusedDatabasesRow
+		if err := rows.Scan(&i.Subject, &i.DbID); err != nil {
+			return nil, err
+		}
+		items = append(items, i)
+	}
+	if err := rows.Err(); err != nil {
+		return nil, err
+	}
+	return items, nil
+}

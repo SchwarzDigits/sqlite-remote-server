@@ -32,6 +32,8 @@ const (
 	EnvHelloTimeout           = "SQLITE_REMOTE_HELLO_TIMEOUT"
 	// EnvAllowedOrigins is a comma-separated list of host patterns.
 	EnvAllowedOrigins = "SQLITE_REMOTE_ALLOWED_ORIGINS"
+	// EnvDeleteUnusedAfterDays is a number of days. 0 turns the deletion of unused databases off.
+	EnvDeleteUnusedAfterDays = "SQLITE_REMOTE_DELETE_UNUSED_AFTER_DAYS"
 )
 
 const defaultPort = 8080
@@ -51,6 +53,7 @@ var envOf = map[string]string{
 	"LeaseTTL":               EnvLeaseTTL,
 	"HelloTimeout":           EnvHelloTimeout,
 	"AllowedOrigins":         EnvAllowedOrigins,
+	"DeleteUnusedAfter":      EnvDeleteUnusedAfterDays,
 }
 
 // Config is the configuration of the command.
@@ -108,6 +111,13 @@ func Load() (Config, error) {
 		if err := durationVar(d.name, d.value); err != nil {
 			return Config{}, err
 		}
+	}
+	if v := os.Getenv(EnvDeleteUnusedAfterDays); v != "" {
+		days, err := strconv.ParseUint(v, 10, 16)
+		if err != nil {
+			return Config{}, fmt.Errorf("%s: must be a number of days, 0 for off, got %q", EnvDeleteUnusedAfterDays, v)
+		}
+		s.DeleteUnusedAfter = time.Duration(days) * 24 * time.Hour
 	}
 	for _, origin := range strings.Split(os.Getenv(EnvAllowedOrigins), ",") {
 		if origin = strings.TrimSpace(origin); origin != "" {

@@ -23,7 +23,13 @@ Status: works and is tested, not yet in production use. Versions are 0.x: the pr
   whose local copy is a few commits behind discards only those blocks instead of the whole copy.
 - **Deletion.** A client can delete a database it does not have open. The server removes the blocks and the change
   log but keeps a record with the lease epoch and the version, and increases both. If the database is created again,
-  epoch and version continue, so no lease on the deleted database can ever commit to the new one.
+  epoch and version continue, so no lease on the deleted database can ever commit to the new one, and a client's
+  outdated cache of the deleted database is recognized as outdated.
+- **Deletion of unused databases.** A database that no client has opened, read or committed to for 180 days is
+  deleted, as if its owner had deleted it. This removes the databases of owners who have lost their key and can
+  therefore never delete them. Every open, commit and lease renewal counts as use; a client that is connected renews
+  its leases with its pings. The server checks once an hour and logs each deleted database with its subject and name,
+  and each sweep with the number deleted.
 - **Storage.** In memory for tests, or in PostgreSQL.
 
 ## Running
@@ -75,6 +81,7 @@ it, so clients should use a separate login key for each server.
 | `SQLITE_REMOTE_PING_INTERVAL` | no | `10s` | interval at which idle clients ping |
 | `SQLITE_REMOTE_LEASE_TTL` | no | `30s` | time after the last renewal from which a lease can be taken without takeover, at least twice the ping interval |
 | `SQLITE_REMOTE_HELLO_TIMEOUT` | no | `5s` | time a client has to complete the login |
+| `SQLITE_REMOTE_DELETE_UNUSED_AFTER_DAYS` | no | `180` | days without use after which a database is deleted, see [Features](#features). `0` turns this off |
 
 ### Embedding
 

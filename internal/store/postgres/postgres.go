@@ -427,27 +427,71 @@ func (s *Store) Delete(ctx context.Context, req store.DeleteRequest) (store.Dele
 		if active && !req.Takeover {
 			return &store.LeaseHeldError{Since: row.LeaseGranted.Time}
 		}
-		if err := q.DeleteBlocksFrom(ctx, db.DeleteBlocksFromParams{
-			Subject: req.Key.Subject,
-			DbID:    req.Key.DBID,
-			Idx:     0,
-		}); err != nil {
-			return err
-		}
-		if err := q.DeleteChanges(ctx, db.DeleteChangesParams{Subject: req.Key.Subject, DbID: req.Key.DBID}); err != nil {
-			return err
-		}
-		epoch, err := q.DeleteDatabase(ctx, db.DeleteDatabaseParams{Subject: req.Key.Subject, DbID: req.Key.DBID})
+		epoch, err := remove(ctx, q, req.Key)
 		if err != nil {
 			return err
 		}
-		result = store.DeleteResult{Epoch: uint64(epoch), Revoked: active}
+		result = store.DeleteResult{Epoch: epoch, Revoked: active}
 		return nil
 	})
 	if err != nil {
 		return store.DeleteResult{}, err
 	}
 	return result, nil
+}
+
+// DeleteUnused implements store.Store. Each database is deleted in its own transaction, after its row is locked and
+// checked again: an open or commit since the candidates were read keeps it.
+func (s *Store) DeleteUnused(ctx context.Context, cutoff time.Time, limit int) ([]store.Key, error) {
+	candidates, err := s.q.UnusedDatabases(ctx, db.UnusedDatabasesParams{
+		LeaseExpires: pgtype.Timestamptz{Time: cutoff, Valid: true},
+		Limit:        int32(min(limit, 1<<30)),
+	})
+	if err != nil {
+		return nil, err
+	}
+	var deleted []store.Key
+	for _, candidate := range candidates {
+		k := store.Key{Subject: candidate.Subject, DBID: candidate.DbID}
+		removed := false
+		err := s.inTx(ctx, func(q *db.Queries) error {
+			row, err := q.LockDatabase(ctx, db.LockDatabaseParams{Subject: k.Subject, DbID: k.DBID})
+			if err != nil {
+				return err
+			}
+			if row.Deleted || !row.LeaseExpires.Valid || !row.LeaseExpires.Time.Before(cutoff) {
+				return nil
+			}
+			if _, err := remove(ctx, q, k); err != nil {
+				return err
+			}
+			removed = true
+			return nil
+		})
+		if err != nil {
+			return deleted, err
+		}
+		if removed {
+			deleted = append(deleted, k)
+		}
+	}
+	return deleted, nil
+}
+
+// remove deletes the blocks and the change log of a locked database and marks it as deleted. It returns the new lease
+// epoch.
+func remove(ctx context.Context, q *db.Queries, k store.Key) (uint64, error) {
+	if err := q.DeleteBlocksFrom(ctx, db.DeleteBlocksFromParams{Subject: k.Subject, DbID: k.DBID, Idx: 0}); err != nil {
+		return 0, err
+	}
+	if err := q.DeleteChanges(ctx, db.DeleteChangesParams{Subject: k.Subject, DbID: k.DBID}); err != nil {
+		return 0, err
+	}
+	epoch, err := q.DeleteDatabase(ctx, db.DeleteDatabaseParams{Subject: k.Subject, DbID: k.DBID})
+	if err != nil {
+		return 0, err
+	}
+	return uint64(epoch), nil
 }
 
 // whyNoRow returns the error for a lease update that matched no row: ErrNotFound if the database does not exist,

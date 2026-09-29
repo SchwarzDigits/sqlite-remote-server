@@ -63,6 +63,8 @@ func Run(t *testing.T, newStore func(t *testing.T) store.Store) {
 		{"DeleteIsIdempotent", deleteIsIdempotent},
 		{"RecreatedDatabaseHasNoChangeLog", recreatedDatabaseHasNoChangeLog},
 		{"RecreatedDatabaseMayChangePageSize", recreatedDatabaseMayChangePageSize},
+		{"DeleteUnusedKeepsUsedDatabases", deleteUnusedKeepsUsedDatabases},
+		{"DeleteUnusedRespectsLimit", deleteUnusedRespectsLimit},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			tc.run(t, newStore(t))
@@ -558,4 +560,81 @@ func recreatedDatabaseMayChangePageSize(t *testing.T, s store.Store) {
 	})
 	require.NoError(t, err)
 	require.Equal(t, uint32(4*pageSize), res.State.PageSize)
+}
+
+// long ago is the time of the databases in the DeleteUnused tests. A persistent store is shared with the other tests
+// and with earlier runs, whose databases are used around t0. A cutoff this far back reaches none of them.
+var longAgo = t0.AddDate(-10, 0, 0)
+
+// deleteUnused calls DeleteUnused until it returns nothing and returns the deleted keys of this test.
+func deleteUnused(t *testing.T, s store.Store, cutoff time.Time) []store.Key {
+	t.Helper()
+	var mine []store.Key
+	for {
+		keys, err := s.DeleteUnused(context.Background(), cutoff, 100)
+		require.NoError(t, err)
+		if len(keys) == 0 {
+			return mine
+		}
+		for _, k := range keys {
+			if k.Subject == subject(t, "alice") {
+				mine = append(mine, k)
+			}
+		}
+	}
+}
+
+func deleteUnusedKeepsUsedDatabases(t *testing.T, s store.Store) {
+	cutoff := longAgo.AddDate(0, 6, 0)
+
+	// Released long before the cutoff.
+	released := key(t, "released")
+	lease := create(t, s, released, instanceA, longAgo).Lease
+	version, err := commit(s, released, lease.Epoch, 0, 1, commit1, longAgo, block(0, 0xa0))
+	require.NoError(t, err)
+	require.NoError(t, s.Release(context.Background(), released, lease.Epoch))
+
+	// Still held, but the lease expired long before the cutoff: the holder has not been seen since.
+	abandoned := key(t, "abandoned")
+	create(t, s, abandoned, instanceA, longAgo)
+
+	// Renewed after the cutoff, e.g. by a device that only reads.
+	renewed := key(t, "renewed")
+	lease = create(t, s, renewed, instanceA, longAgo).Lease
+	require.NoError(t, s.Renew(context.Background(), renewed, lease.Epoch, cutoff, ttl))
+
+	// Committed after the cutoff.
+	committed := key(t, "committed")
+	lease = create(t, s, committed, instanceA, longAgo).Lease
+	_, err = commit(s, committed, lease.Epoch, 0, 1, commit1, cutoff, block(0, 0xc0))
+	require.NoError(t, err)
+
+	require.ElementsMatch(t, []store.Key{released, abandoned}, deleteUnused(t, s, cutoff))
+	require.Empty(t, deleteUnused(t, s, cutoff), "a deleted database is not deleted again")
+
+	_, err = open(s, released, instanceA, false, t0)
+	require.ErrorIs(t, err, store.ErrNotFound)
+	recreated := create(t, s, released, instanceA, t0)
+	require.Greater(t, recreated.State.Version, version, "the version continues after the deletion")
+	require.Zero(t, recreated.State.PageCount)
+
+	for _, k := range []store.Key{renewed, committed} {
+		_, err := open(s, k, instanceB, true, t0)
+		require.NoError(t, err, "%s was used after the cutoff", k.DBID)
+	}
+}
+
+func deleteUnusedRespectsLimit(t *testing.T, s store.Store) {
+	for _, name := range []string{"a", "b", "c"} {
+		create(t, s, key(t, name), instanceA, longAgo)
+	}
+	cutoff := longAgo.AddDate(0, 6, 0)
+	keys, err := s.DeleteUnused(context.Background(), cutoff, 1)
+	require.NoError(t, err)
+	require.Len(t, keys, 1)
+	mine := 0
+	if keys[0].Subject == subject(t, "alice") {
+		mine = 1
+	}
+	require.Len(t, deleteUnused(t, s, cutoff), 3-mine, "later calls delete the rest")
 }

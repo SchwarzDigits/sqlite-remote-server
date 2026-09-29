@@ -49,6 +49,7 @@ func TestValidateNamesTheField(t *testing.T) {
 		{"LeaseTTL", func(c *server.Config) { c.LeaseTTL = c.PingInterval }},
 		{"HelloTimeout", func(c *server.Config) { c.HelloTimeout = 0 }},
 		{"AllowedOrigins", func(c *server.Config) { c.AllowedOrigins = []string{"https://client.example"} }},
+		{"DeleteUnusedAfter", func(c *server.Config) { c.DeleteUnusedAfter = time.Hour }},
 	} {
 		t.Run(tc.field, func(t *testing.T) {
 			cfg := valid()

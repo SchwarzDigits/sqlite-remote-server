@@ -79,16 +79,23 @@ type Config struct {
 	// a host, e.g. `*.example.com` or `127.0.0.1:*`. Empty allows only pages from the server's own origin. Clients
 	// other than browsers send no Origin header and are not affected.
 	AllowedOrigins []string
+	// DeleteUnusedAfter deletes a database that no client has opened, read or committed to for this long. It is
+	// meant for databases whose owner has lost the key: nobody can delete them otherwise. A deleted database keeps a
+	// small record, so that its version continues if it is created again and a client's outdated cache is not
+	// taken for current. The server checks once an hour. 0 turns the deletion off; otherwise it must be at least one
+	// day.
+	DeleteUnusedAfter time.Duration
 }
 
 // DefaultConfig returns the default limits and timeouts. Addr, ServerID and Store are left to the caller.
 func DefaultConfig() Config {
 	return Config{
-		MaxFrameBytes:  1 << 20,
-		MaxCommitBytes: 256 << 20,
-		PingInterval:   10 * time.Second,
-		LeaseTTL:       30 * time.Second,
-		HelloTimeout:   5 * time.Second,
+		MaxFrameBytes:     1 << 20,
+		MaxCommitBytes:    256 << 20,
+		PingInterval:      10 * time.Second,
+		LeaseTTL:          30 * time.Second,
+		HelloTimeout:      5 * time.Second,
+		DeleteUnusedAfter: 180 * 24 * time.Hour,
 	}
 }
 
@@ -136,6 +143,8 @@ func (c Config) Validate() error {
 		return invalid("LeaseTTL", "must be at least twice the ping interval %s", c.PingInterval)
 	case c.HelloTimeout <= 0:
 		return invalid("HelloTimeout", "must be positive")
+	case c.DeleteUnusedAfter < 0 || c.DeleteUnusedAfter > 0 && c.DeleteUnusedAfter < 24*time.Hour:
+		return invalid("DeleteUnusedAfter", "must be 0 (off) or at least one day, got %s", c.DeleteUnusedAfter)
 	}
 	for _, origin := range c.AllowedOrigins {
 		if origin == "" || strings.ContainsAny(origin, "/ ") {
@@ -156,6 +165,16 @@ func Run(ctx context.Context, cfg Config, log *slog.Logger) error {
 		return err
 	}
 	defer closeStore()
+	if cfg.DeleteUnusedAfter > 0 {
+		stopped := make(chan struct{})
+		go func() {
+			defer close(stopped)
+			deleteUnused(ctx, st, cfg.DeleteUnusedAfter, time.Now, log)
+		}()
+		// Runs before closeStore: the store stays open until the last deletion has finished.
+		defer func() { <-stopped }()
+		log.Info("unused databases are deleted", "after_days", cfg.DeleteUnusedAfter.Hours()/24)
+	}
 
 	srv := protocol.NewServer(protocol.Options{
 		Store:          st,

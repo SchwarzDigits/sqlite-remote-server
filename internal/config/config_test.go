@@ -38,6 +38,7 @@ func TestOverrides(t *testing.T) {
 	t.Setenv(config.EnvPingInterval, "5s")
 	t.Setenv(config.EnvLeaseTTL, "1m")
 	t.Setenv(config.EnvHelloTimeout, "2s")
+	t.Setenv(config.EnvDeleteUnusedAfterDays, "30")
 
 	cfg, err := config.Load()
 	require.NoError(t, err)
@@ -48,6 +49,19 @@ func TestOverrides(t *testing.T) {
 	require.Equal(t, 5*time.Second, cfg.Server.PingInterval)
 	require.Equal(t, time.Minute, cfg.Server.LeaseTTL)
 	require.Equal(t, 2*time.Second, cfg.Server.HelloTimeout)
+	require.Equal(t, 30*24*time.Hour, cfg.Server.DeleteUnusedAfter)
+}
+
+func TestDeleteUnusedAfterDays(t *testing.T) {
+	setMinimal(t)
+	cfg, err := config.Load()
+	require.NoError(t, err)
+	require.Equal(t, 180*24*time.Hour, cfg.Server.DeleteUnusedAfter, "default is 180 days")
+
+	t.Setenv(config.EnvDeleteUnusedAfterDays, "0")
+	cfg, err = config.Load()
+	require.NoError(t, err)
+	require.Zero(t, cfg.Server.DeleteUnusedAfter, "0 turns the deletion off")
 }
 
 func TestPostgresRequiresDatabaseURL(t *testing.T) {
@@ -122,6 +136,8 @@ func TestInvalidVariableIsNamedInError(t *testing.T) {
 		{config.EnvDBMinConns, "-1"},
 		{config.EnvDBMinConns, "21"},
 		{config.EnvRequireSyncReplication, "yes please"},
+		{config.EnvDeleteUnusedAfterDays, "-1"},
+		{config.EnvDeleteUnusedAfterDays, "half a year"},
 	} {
 		t.Run(tc.name+"="+tc.value, func(t *testing.T) {
 			setMinimal(t)
