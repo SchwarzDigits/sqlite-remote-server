@@ -114,6 +114,16 @@ err := server.Run(ctx, cfg, logger) // returns after ctx is canceled and the ser
 `Config.Validate` reports an invalid field as a `*server.ConfigError` with the Go field name, so the caller can name
 its own setting in the message.
 
+A program whose platform sets the same settings under other variable names can reuse the parsing of the command
+instead: `config.LoadFrom` takes a function that returns the value for a `SQLITE_REMOTE_*` name, and the program looks
+up its own name there.
+
+```go
+cfg, err := config.LoadFrom(func(name string) string {
+    return os.Getenv(strings.Replace(name, "SQLITE_REMOTE_", "PLATFORM_VFS_", 1))
+})
+```
+
 ## PostgreSQL storage
 
 A block is stored in parts of at most 1 KB, one row per part, in a table with `fillfactor = 50`. An update in
@@ -158,7 +168,7 @@ this server.
 |---|---|
 | `cmd/sqlite-remote-server` | the command: reads the environment and calls `server.Run` |
 | `server` | `Config`, `Validate` and `Run`, the public API |
-| `internal/config` | the environment variables of the command |
+| `config` | the environment variables of the command. `LoadFrom` reads them through a function, for programs that receive the settings under other names |
 | `internal/protocol` | WebSocket, login, leases, commits, fetches, change log |
 | `internal/store` | the store interface. `memory` and `postgres` implement it, `storetest` checks both against the same contract |
 | `internal/platform` | logging, probes, panic recovery, graceful shutdown |

@@ -9,7 +9,7 @@ import (
 	"os/signal"
 	"syscall"
 
-	"github.com/SchwarzDigits/sqlite-remote-server/internal/config"
+	"github.com/SchwarzDigits/sqlite-remote-server/config"
 	"github.com/SchwarzDigits/sqlite-remote-server/internal/platform"
 	"github.com/SchwarzDigits/sqlite-remote-server/server"
 )

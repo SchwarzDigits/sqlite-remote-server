@@ -1,5 +1,8 @@
 // Package config reads the SQLITE_REMOTE_* environment variables of the command. No other package reads the
 // environment. Load parses them into a server.Config, validates it and names the variable in every error.
+//
+// A program that receives the settings under other names, e.g. from a platform, calls LoadFrom with a function that
+// translates the names.
 package config
 
 import (
@@ -74,11 +77,16 @@ type Config struct {
 
 // Load reads and validates the environment variables.
 func Load() (Config, error) {
+	return LoadFrom(os.Getenv)
+}
+
+// LoadFrom reads and validates the variables through getenv, which returns "" for an unset variable.
+func LoadFrom(getenv func(string) string) (Config, error) {
 	cfg := Config{Server: server.DefaultConfig(), LogLevel: slog.LevelInfo}
 	s := &cfg.Server
 
 	port := defaultPort
-	if v := os.Getenv(EnvPort); v != "" {
+	if v := getenv(EnvPort); v != "" {
 		n, err := strconv.Atoi(v)
 		if err != nil || n < 1 || n > 65535 {
 			return Config{}, fmt.Errorf("%s: must be a port from 1 to 65535, got %q", EnvPort, v)
@@ -87,35 +95,35 @@ func Load() (Config, error) {
 	}
 	s.Addr = fmt.Sprintf(":%d", port)
 
-	if v := os.Getenv(EnvLogLevel); v != "" {
+	if v := getenv(EnvLogLevel); v != "" {
 		if err := cfg.LogLevel.UnmarshalText([]byte(v)); err != nil {
 			return Config{}, fmt.Errorf("%s: %w", EnvLogLevel, err)
 		}
 	}
-	s.ServerID = os.Getenv(EnvServerID)
-	s.Store = server.StoreKind(os.Getenv(EnvStore))
-	s.DatabaseURL = os.Getenv(EnvDatabaseURL)
-	s.TokenJWKSURL = os.Getenv(EnvTokenJWKSURL)
-	s.TokenJWKSFile = os.Getenv(EnvTokenJWKSFile)
-	s.TokenIssuer = os.Getenv(EnvTokenIssuer)
-	s.TokenAudience = os.Getenv(EnvTokenAudience)
+	s.ServerID = getenv(EnvServerID)
+	s.Store = server.StoreKind(getenv(EnvStore))
+	s.DatabaseURL = getenv(EnvDatabaseURL)
+	s.TokenJWKSURL = getenv(EnvTokenJWKSURL)
+	s.TokenJWKSFile = getenv(EnvTokenJWKSFile)
+	s.TokenIssuer = getenv(EnvTokenIssuer)
+	s.TokenAudience = getenv(EnvTokenAudience)
 
 	var err error
-	if s.DBMaxConns, err = connsVar(EnvDBMaxConns); err != nil {
+	if s.DBMaxConns, err = connsVar(getenv, EnvDBMaxConns); err != nil {
 		return Config{}, err
 	}
-	if s.DBMinConns, err = connsVar(EnvDBMinConns); err != nil {
+	if s.DBMinConns, err = connsVar(getenv, EnvDBMinConns); err != nil {
 		return Config{}, err
 	}
-	if v := os.Getenv(EnvRequireSyncReplication); v != "" {
+	if v := getenv(EnvRequireSyncReplication); v != "" {
 		if s.RequireSyncReplication, err = strconv.ParseBool(v); err != nil {
 			return Config{}, fmt.Errorf("%s: must be true or false, got %q", EnvRequireSyncReplication, v)
 		}
 	}
-	if err := uint32Var(EnvMaxFrameBytes, &s.MaxFrameBytes); err != nil {
+	if err := uint32Var(getenv, EnvMaxFrameBytes, &s.MaxFrameBytes); err != nil {
 		return Config{}, err
 	}
-	if err := uint64Var(EnvMaxCommitBytes, &s.MaxCommitBytes); err != nil {
+	if err := uint64Var(getenv, EnvMaxCommitBytes, &s.MaxCommitBytes); err != nil {
 		return Config{}, err
 	}
 	for _, d := range []struct {
@@ -127,18 +135,18 @@ func Load() (Config, error) {
 		{EnvHelloTimeout, &s.HelloTimeout},
 		{EnvTokenLeeway, &s.TokenLeeway},
 	} {
-		if err := durationVar(d.name, d.value); err != nil {
+		if err := durationVar(getenv, d.name, d.value); err != nil {
 			return Config{}, err
 		}
 	}
-	if v := os.Getenv(EnvDeleteUnusedAfterDays); v != "" {
+	if v := getenv(EnvDeleteUnusedAfterDays); v != "" {
 		days, err := strconv.ParseUint(v, 10, 16)
 		if err != nil {
 			return Config{}, fmt.Errorf("%s: must be a number of days, 0 for off, got %q", EnvDeleteUnusedAfterDays, v)
 		}
 		s.DeleteUnusedAfter = time.Duration(days) * 24 * time.Hour
 	}
-	for _, origin := range strings.Split(os.Getenv(EnvAllowedOrigins), ",") {
+	for _, origin := range strings.Split(getenv(EnvAllowedOrigins), ",") {
 		if origin = strings.TrimSpace(origin); origin != "" {
 			s.AllowedOrigins = append(s.AllowedOrigins, origin)
 		}
@@ -163,8 +171,8 @@ func Named(err error) error {
 }
 
 // connsVar reads a pool size. An unset variable means 0, which keeps the pgxpool default.
-func connsVar(name string) (int32, error) {
-	v := os.Getenv(name)
+func connsVar(getenv func(string) string, name string) (int32, error) {
+	v := getenv(name)
 	if v == "" {
 		return 0, nil
 	}
@@ -175,8 +183,8 @@ func connsVar(name string) (int32, error) {
 	return int32(n), nil
 }
 
-func uint32Var(name string, target *uint32) error {
-	v := os.Getenv(name)
+func uint32Var(getenv func(string) string, name string, target *uint32) error {
+	v := getenv(name)
 	if v == "" {
 		return nil
 	}
@@ -188,8 +196,8 @@ func uint32Var(name string, target *uint32) error {
 	return nil
 }
 
-func uint64Var(name string, target *uint64) error {
-	v := os.Getenv(name)
+func uint64Var(getenv func(string) string, name string, target *uint64) error {
+	v := getenv(name)
 	if v == "" {
 		return nil
 	}
@@ -201,8 +209,8 @@ func uint64Var(name string, target *uint64) error {
 	return nil
 }
 
-func durationVar(name string, target *time.Duration) error {
-	v := os.Getenv(name)
+func durationVar(getenv func(string) string, name string, target *time.Duration) error {
+	v := getenv(name)
 	if v == "" {
 		return nil
 	}

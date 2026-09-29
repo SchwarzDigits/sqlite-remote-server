@@ -8,7 +8,7 @@ import (
 
 	"github.com/stretchr/testify/require"
 
-	"github.com/SchwarzDigits/sqlite-remote-server/internal/config"
+	"github.com/SchwarzDigits/sqlite-remote-server/config"
 	"github.com/SchwarzDigits/sqlite-remote-server/server"
 )
 
@@ -167,4 +167,16 @@ func TestInvalidVariableIsNamedInError(t *testing.T) {
 			require.ErrorContains(t, err, tc.name)
 		})
 	}
+}
+
+func TestLoadFromReadsThroughTheGivenFunction(t *testing.T) {
+	vars := map[string]string{
+		config.EnvServerID: "wss://vfs.test/v1/ws",
+		config.EnvStore:    "memory",
+		config.EnvPort:     "9001",
+	}
+	cfg, err := config.LoadFrom(func(name string) string { return vars[name] })
+	require.NoError(t, err)
+	require.Equal(t, ":9001", cfg.Server.Addr)
+	require.Equal(t, "wss://vfs.test/v1/ws", cfg.Server.ServerID)
 }
