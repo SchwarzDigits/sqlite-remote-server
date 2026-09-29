@@ -50,6 +50,15 @@ func TestValidateNamesTheField(t *testing.T) {
 		{"HelloTimeout", func(c *server.Config) { c.HelloTimeout = 0 }},
 		{"AllowedOrigins", func(c *server.Config) { c.AllowedOrigins = []string{"https://client.example"} }},
 		{"DeleteUnusedAfter", func(c *server.Config) { c.DeleteUnusedAfter = time.Hour }},
+		{"TokenJWKSFile", func(c *server.Config) {
+			c.TokenJWKSURL, c.TokenJWKSFile, c.TokenIssuer = "https://tokens.test/jwks", "jwks.json", "https://tokens.test"
+		}},
+		{"TokenIssuer", func(c *server.Config) { c.TokenIssuer = "https://tokens.test" }},
+		{"TokenIssuer", func(c *server.Config) { c.TokenJWKSURL = "https://tokens.test/jwks" }},
+		{"TokenJWKSURL", func(c *server.Config) {
+			c.TokenJWKSURL, c.TokenIssuer = "http://tokens.test/jwks", "https://tokens.test"
+		}},
+		{"TokenLeeway", func(c *server.Config) { c.TokenLeeway = -time.Second }},
 	} {
 		t.Run(tc.field, func(t *testing.T) {
 			cfg := valid()

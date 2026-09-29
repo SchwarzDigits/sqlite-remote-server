@@ -34,6 +34,11 @@ const (
 	EnvAllowedOrigins = "SQLITE_REMOTE_ALLOWED_ORIGINS"
 	// EnvDeleteUnusedAfterDays is a number of days. 0 turns the deletion of unused databases off.
 	EnvDeleteUnusedAfterDays = "SQLITE_REMOTE_DELETE_UNUSED_AFTER_DAYS"
+	EnvTokenJWKSURL          = "SQLITE_REMOTE_TOKEN_JWKS_URL"
+	EnvTokenJWKSFile         = "SQLITE_REMOTE_TOKEN_JWKS_FILE"
+	EnvTokenIssuer           = "SQLITE_REMOTE_TOKEN_ISSUER"
+	EnvTokenAudience         = "SQLITE_REMOTE_TOKEN_AUDIENCE"
+	EnvTokenLeeway           = "SQLITE_REMOTE_TOKEN_LEEWAY"
 )
 
 const defaultPort = 8080
@@ -54,6 +59,11 @@ var envOf = map[string]string{
 	"HelloTimeout":           EnvHelloTimeout,
 	"AllowedOrigins":         EnvAllowedOrigins,
 	"DeleteUnusedAfter":      EnvDeleteUnusedAfterDays,
+	"TokenJWKSURL":           EnvTokenJWKSURL,
+	"TokenJWKSFile":          EnvTokenJWKSFile,
+	"TokenIssuer":            EnvTokenIssuer,
+	"TokenAudience":          EnvTokenAudience,
+	"TokenLeeway":            EnvTokenLeeway,
 }
 
 // Config is the configuration of the command.
@@ -85,6 +95,10 @@ func Load() (Config, error) {
 	s.ServerID = os.Getenv(EnvServerID)
 	s.Store = server.StoreKind(os.Getenv(EnvStore))
 	s.DatabaseURL = os.Getenv(EnvDatabaseURL)
+	s.TokenJWKSURL = os.Getenv(EnvTokenJWKSURL)
+	s.TokenJWKSFile = os.Getenv(EnvTokenJWKSFile)
+	s.TokenIssuer = os.Getenv(EnvTokenIssuer)
+	s.TokenAudience = os.Getenv(EnvTokenAudience)
 
 	var err error
 	if s.DBMaxConns, err = connsVar(EnvDBMaxConns); err != nil {
@@ -107,7 +121,12 @@ func Load() (Config, error) {
 	for _, d := range []struct {
 		name  string
 		value *time.Duration
-	}{{EnvPingInterval, &s.PingInterval}, {EnvLeaseTTL, &s.LeaseTTL}, {EnvHelloTimeout, &s.HelloTimeout}} {
+	}{
+		{EnvPingInterval, &s.PingInterval},
+		{EnvLeaseTTL, &s.LeaseTTL},
+		{EnvHelloTimeout, &s.HelloTimeout},
+		{EnvTokenLeeway, &s.TokenLeeway},
+	} {
 		if err := durationVar(d.name, d.value); err != nil {
 			return Config{}, err
 		}

@@ -52,6 +52,24 @@ func TestOverrides(t *testing.T) {
 	require.Equal(t, 30*24*time.Hour, cfg.Server.DeleteUnusedAfter)
 }
 
+func TestAccessTokens(t *testing.T) {
+	setMinimal(t)
+	t.Setenv(config.EnvTokenJWKSURL, "https://tokens.test/.well-known/jwks.json")
+	t.Setenv(config.EnvTokenIssuer, "https://tokens.test")
+	t.Setenv(config.EnvTokenAudience, "wss://vfs.test/v1/ws")
+	t.Setenv(config.EnvTokenLeeway, "30s")
+	cfg, err := config.Load()
+	require.NoError(t, err)
+	require.Equal(t, "https://tokens.test/.well-known/jwks.json", cfg.Server.TokenJWKSURL)
+	require.Equal(t, "https://tokens.test", cfg.Server.TokenIssuer)
+	require.Equal(t, "wss://vfs.test/v1/ws", cfg.Server.TokenAudience)
+	require.Equal(t, 30*time.Second, cfg.Server.TokenLeeway)
+
+	t.Setenv(config.EnvTokenIssuer, "")
+	_, err = config.Load()
+	require.ErrorContains(t, err, config.EnvTokenIssuer)
+}
+
 func TestDeleteUnusedAfterDays(t *testing.T) {
 	setMinimal(t)
 	cfg, err := config.Load()

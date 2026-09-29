@@ -100,6 +100,9 @@ const (
 	ErrorCode_ERROR_CODE_RATE_LIMITED   ErrorCode = 10
 	// Unexpected error on the server. Details are only in the server's log.
 	ErrorCode_ERROR_CODE_INTERNAL ErrorCode = 11
+	// The server requires an access token (`Hello.access_token`), and the token is missing, invalid, expired, or bound
+	// to another key.
+	ErrorCode_ERROR_CODE_ACCESS_DENIED ErrorCode = 12
 )
 
 // Enum value maps for ErrorCode.
@@ -117,6 +120,7 @@ var (
 		9:  "ERROR_CODE_QUOTA_EXCEEDED",
 		10: "ERROR_CODE_RATE_LIMITED",
 		11: "ERROR_CODE_INTERNAL",
+		12: "ERROR_CODE_ACCESS_DENIED",
 	}
 	ErrorCode_value = map[string]int32{
 		"ERROR_CODE_UNSPECIFIED":      0,
@@ -131,6 +135,7 @@ var (
 		"ERROR_CODE_QUOTA_EXCEEDED":   9,
 		"ERROR_CODE_RATE_LIMITED":     10,
 		"ERROR_CODE_INTERNAL":         11,
+		"ERROR_CODE_ACCESS_DENIED":    12,
 	}
 )
 
@@ -587,7 +592,8 @@ func (*ServerFrame_Challenge) isServerFrame_Body() {}
 
 func (*ServerFrame_Changes) isServerFrame_Body() {}
 
-// First frame on a connection. The server answers with a `Challenge`, or with an `Error` if the frame is invalid.
+// First frame on a connection. The server answers with a `Challenge`, or with an `Error` if the frame is invalid or
+// the access token is rejected.
 type Hello struct {
 	state protoimpl.MessageState `protogen:"open.v1"`
 	// Protocol version of the client. The server rejects a version other than its own with ERROR_CODE_BAD_REQUEST.
@@ -597,8 +603,13 @@ type Hello struct {
 	// Algorithm and public key of the client's key pair. The client proves possession of the private key with a
 	// `Proof`. The server derives the subject from the public key. The subject determines which databases the
 	// connection can access. A client has no other way to select a subject.
-	SigAlg        SigAlg `protobuf:"varint,3,opt,name=sig_alg,json=sigAlg,proto3,enum=sqlite_remote.v1.SigAlg" json:"sig_alg,omitempty"`
-	PublicKey     []byte `protobuf:"bytes,4,opt,name=public_key,json=publicKey,proto3" json:"public_key,omitempty"` // 5 and 6 are reserved for an enrolment token and a second signature algorithm.
+	SigAlg    SigAlg `protobuf:"varint,3,opt,name=sig_alg,json=sigAlg,proto3,enum=sqlite_remote.v1.SigAlg" json:"sig_alg,omitempty"`
+	PublicKey []byte `protobuf:"bytes,4,opt,name=public_key,json=publicKey,proto3" json:"public_key,omitempty"`
+	// Access token, for a server that admits only clients with one. A signed JWT whose `cnf` claim binds it to
+	// `public_key`, so that it is useless without the private key. The server checks it before the `Challenge` and
+	// rejects a missing, invalid or expired token, or one bound to another key, with ERROR_CODE_ACCESS_DENIED. A server
+	// without such a requirement ignores the field. See `HelloOk.access_token_ttl_ms`.
+	AccessToken   string `protobuf:"bytes,5,opt,name=access_token,json=accessToken,proto3" json:"access_token,omitempty"` // 6 is reserved for a second signature algorithm.
 	unknownFields protoimpl.UnknownFields
 	sizeCache     protoimpl.SizeCache
 }
@@ -659,6 +670,13 @@ func (x *Hello) GetPublicKey() []byte {
 		return x.PublicKey
 	}
 	return nil
+}
+
+func (x *Hello) GetAccessToken() string {
+	if x != nil {
+		return x.AccessToken
+	}
+	return ""
 }
 
 // Answer to `Hello`, with the Hello's request_id. The client answers with a `Proof`.
@@ -792,9 +810,13 @@ type HelloOk struct {
 	PingIntervalMs uint32 `protobuf:"varint,3,opt,name=ping_interval_ms,json=pingIntervalMs,proto3" json:"ping_interval_ms,omitempty"`
 	// Time after the last renewal from which another instance can acquire the lease without `takeover`, in
 	// milliseconds. Commits and pings renew the lease.
-	LeaseTtlMs    uint32 `protobuf:"varint,4,opt,name=lease_ttl_ms,json=leaseTtlMs,proto3" json:"lease_ttl_ms,omitempty"`
-	unknownFields protoimpl.UnknownFields
-	sizeCache     protoimpl.SizeCache
+	LeaseTtlMs uint32 `protobuf:"varint,4,opt,name=lease_ttl_ms,json=leaseTtlMs,proto3" json:"lease_ttl_ms,omitempty"`
+	// Remaining lifetime of the access token in milliseconds, 0 without a token. Relative, so that the clocks of client
+	// and server need not agree. The client reconnects with a new token before this time has passed, between two
+	// requests. Shortly after it has passed, the server closes the connection at the next frame.
+	AccessTokenTtlMs uint64 `protobuf:"varint,5,opt,name=access_token_ttl_ms,json=accessTokenTtlMs,proto3" json:"access_token_ttl_ms,omitempty"`
+	unknownFields    protoimpl.UnknownFields
+	sizeCache        protoimpl.SizeCache
 }
 
 func (x *HelloOk) Reset() {
@@ -851,6 +873,13 @@ func (x *HelloOk) GetPingIntervalMs() uint32 {
 func (x *HelloOk) GetLeaseTtlMs() uint32 {
 	if x != nil {
 		return x.LeaseTtlMs
+	}
+	return 0
+}
+
+func (x *HelloOk) GetAccessTokenTtlMs() uint64 {
+	if x != nil {
+		return x.AccessTokenTtlMs
 	}
 	return 0
 }
@@ -2061,26 +2090,28 @@ const file_sqlite_remote_v1_sqlite_remote_proto_rawDesc = "" +
 	"\x02ok\x18\x11 \x01(\v2\x14.sqlite_remote.v1.OkH\x00R\x02ok\x12;\n" +
 	"\tchallenge\x18\x12 \x01(\v2\x1b.sqlite_remote.v1.ChallengeH\x00R\tchallenge\x125\n" +
 	"\achanges\x18\x13 \x01(\v2\x19.sqlite_remote.v1.ChangesH\x00R\achangesB\x06\n" +
-	"\x04body\"\xb8\x01\n" +
+	"\x04body\"\xdb\x01\n" +
 	"\x05Hello\x12)\n" +
 	"\x10protocol_version\x18\x01 \x01(\rR\x0fprotocolVersion\x12\x1f\n" +
 	"\vinstance_id\x18\x02 \x01(\fR\n" +
 	"instanceId\x121\n" +
 	"\asig_alg\x18\x03 \x01(\x0e2\x18.sqlite_remote.v1.SigAlgR\x06sigAlg\x12\x1d\n" +
 	"\n" +
-	"public_key\x18\x04 \x01(\fR\tpublicKeyJ\x04\b\x14\x10\x15R\vdev_subject\"b\n" +
+	"public_key\x18\x04 \x01(\fR\tpublicKey\x12!\n" +
+	"\faccess_token\x18\x05 \x01(\tR\vaccessTokenJ\x04\b\x14\x10\x15R\vdev_subject\"b\n" +
 	"\tChallenge\x12\x14\n" +
 	"\x05nonce\x18\x01 \x01(\fR\x05nonce\x12\x1b\n" +
 	"\tserver_id\x18\x02 \x01(\tR\bserverId\x12\"\n" +
 	"\rexpires_at_ms\x18\x03 \x01(\x04R\vexpiresAtMs\"%\n" +
 	"\x05Proof\x12\x1c\n" +
-	"\tsignature\x18\x01 \x01(\fR\tsignature\"\xa8\x01\n" +
+	"\tsignature\x18\x01 \x01(\fR\tsignature\"\xd7\x01\n" +
 	"\aHelloOk\x12)\n" +
 	"\x10protocol_version\x18\x01 \x01(\rR\x0fprotocolVersion\x12&\n" +
 	"\x0fmax_frame_bytes\x18\x02 \x01(\rR\rmaxFrameBytes\x12(\n" +
 	"\x10ping_interval_ms\x18\x03 \x01(\rR\x0epingIntervalMs\x12 \n" +
 	"\flease_ttl_ms\x18\x04 \x01(\rR\n" +
-	"leaseTtlMs\"\xb2\x01\n" +
+	"leaseTtlMs\x12-\n" +
+	"\x13access_token_ttl_ms\x18\x05 \x01(\x04R\x10accessTokenTtlMs\"\xb2\x01\n" +
 	"\x04Open\x12\x13\n" +
 	"\x05db_id\x18\x01 \x01(\tR\x04dbId\x12\x1b\n" +
 	"\tpage_size\x18\x02 \x01(\rR\bpageSize\x12*\n" +
@@ -2166,7 +2197,7 @@ const file_sqlite_remote_v1_sqlite_remote_proto_rawDesc = "" +
 	"\x15lease_holder_since_ms\x18\x04 \x01(\x04R\x12leaseHolderSinceMs*6\n" +
 	"\x06SigAlg\x12\x17\n" +
 	"\x13SIG_ALG_UNSPECIFIED\x10\x00\x12\x13\n" +
-	"\x0fSIG_ALG_ED25519\x10\x01*\xd9\x02\n" +
+	"\x0fSIG_ALG_ED25519\x10\x01*\xf7\x02\n" +
 	"\tErrorCode\x12\x1a\n" +
 	"\x16ERROR_CODE_UNSPECIFIED\x10\x00\x12\x1e\n" +
 	"\x1aERROR_CODE_UNAUTHENTICATED\x10\x01\x12\x18\n" +
@@ -2180,7 +2211,8 @@ const file_sqlite_remote_v1_sqlite_remote_proto_rawDesc = "" +
 	"\x19ERROR_CODE_QUOTA_EXCEEDED\x10\t\x12\x1b\n" +
 	"\x17ERROR_CODE_RATE_LIMITED\x10\n" +
 	"\x12\x17\n" +
-	"\x13ERROR_CODE_INTERNAL\x10\vB\xe3\x01\n" +
+	"\x13ERROR_CODE_INTERNAL\x10\v\x12\x1c\n" +
+	"\x18ERROR_CODE_ACCESS_DENIED\x10\fB\xe3\x01\n" +
 	"\x14com.sqlite_remote.v1B\x11SqliteRemoteProtoP\x01Z[github.com/SchwarzDigits/sqlite-remote-server/internal/gen/sqlite_remote/v1;sqlite_remotev1\xa2\x02\x03SXX\xaa\x02\x0fSqliteRemote.V1\xca\x02\x0fSqliteRemote\\V1\xe2\x02\x1bSqliteRemote\\V1\\GPBMetadata\xea\x02\x10SqliteRemote::V1b\x06proto3"
 
 var (

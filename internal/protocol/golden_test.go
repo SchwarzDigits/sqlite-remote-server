@@ -21,6 +21,8 @@ const goldenDir = "../../proto/testdata/v1"
 const (
 	dbID   = "keystore"
 	timeMs = 1_758_550_000_000
+	// accessToken is shaped like a JWT. The protocol treats the token as an opaque string.
+	accessToken = "eyJhbGciOiJFZERTQSIsImtpZCI6ImsxIn0.eyJzdWIiOiJhbGljZSJ9.c2lnbmF0dXJl"
 )
 
 var (
@@ -52,6 +54,17 @@ func samples() []sample {
 		}}}},
 		{"server_hello_ok", &pb.ServerFrame{RequestId: 1, Body: &pb.ServerFrame_HelloOk{HelloOk: &pb.HelloOk{
 			ProtocolVersion: 1, MaxFrameBytes: 1_048_576, PingIntervalMs: 10_000, LeaseTtlMs: 30_000,
+		}}}},
+		{"client_hello_token", &pb.ClientFrame{RequestId: 1, Body: &pb.ClientFrame_Hello{Hello: &pb.Hello{
+			ProtocolVersion: 1, InstanceId: instanceID,
+			SigAlg: pb.SigAlg_SIG_ALG_ED25519, PublicKey: publicKey, AccessToken: accessToken,
+		}}}},
+		{"server_hello_ok_token", &pb.ServerFrame{RequestId: 2, Body: &pb.ServerFrame_HelloOk{HelloOk: &pb.HelloOk{
+			ProtocolVersion: 1, MaxFrameBytes: 1_048_576, PingIntervalMs: 10_000, LeaseTtlMs: 30_000,
+			AccessTokenTtlMs: 3_540_000,
+		}}}},
+		{"server_error_access_denied", &pb.ServerFrame{RequestId: 1, Body: &pb.ServerFrame_Error{Error: &pb.Error{
+			Code: pb.ErrorCode_ERROR_CODE_ACCESS_DENIED, Detail: "access token expired",
 		}}}},
 		{"client_open", &pb.ClientFrame{RequestId: 2, Body: &pb.ClientFrame_Open{Open: &pb.Open{
 			DbId: dbID, PageSize: 4096, CreateIfMissing: true,

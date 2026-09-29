@@ -10,6 +10,7 @@ import (
 	"fmt"
 	"log/slog"
 	"net/http"
+	"net/url"
 	"strings"
 	"time"
 
@@ -20,6 +21,7 @@ import (
 	"github.com/SchwarzDigits/sqlite-remote-server/internal/store"
 	"github.com/SchwarzDigits/sqlite-remote-server/internal/store/memory"
 	"github.com/SchwarzDigits/sqlite-remote-server/internal/store/postgres"
+	"github.com/SchwarzDigits/sqlite-remote-server/internal/token"
 )
 
 // Paths served on Config.Addr.
@@ -85,6 +87,20 @@ type Config struct {
 	// taken for current. The server checks once an hour. 0 turns the deletion off; otherwise it must be at least one
 	// day.
 	DeleteUnusedAfter time.Duration
+
+	// TokenJWKSURL or TokenJWKSFile turns on access tokens: the server then admits only clients that present a JWT
+	// from a token service, bound to their key. The JWKS holds the token service's public keys. A JWKS URL is fetched
+	// again after its max-age, at most five minutes, and when a token names an unknown key, at most once a minute.
+	// It must use https, except on localhost. A JWKS file is read once at start. Only one of the two may be set.
+	TokenJWKSURL  string
+	TokenJWKSFile string
+	// TokenIssuer is the required iss claim of a token. Required with access tokens.
+	TokenIssuer string
+	// TokenAudience is the required aud claim of a token. Empty means ServerID.
+	TokenAudience string
+	// TokenLeeway allows for clock differences between the token service and this server when checking exp and
+	// nbf. A connection whose token expired more than TokenLeeway ago is closed at the next request.
+	TokenLeeway time.Duration
 }
 
 // DefaultConfig returns the default limits and timeouts. Addr, ServerID and Store are left to the caller.
@@ -96,6 +112,7 @@ func DefaultConfig() Config {
 		LeaseTTL:          30 * time.Second,
 		HelloTimeout:      5 * time.Second,
 		DeleteUnusedAfter: 180 * 24 * time.Hour,
+		TokenLeeway:       time.Minute,
 	}
 }
 
@@ -145,6 +162,21 @@ func (c Config) Validate() error {
 		return invalid("HelloTimeout", "must be positive")
 	case c.DeleteUnusedAfter < 0 || c.DeleteUnusedAfter > 0 && c.DeleteUnusedAfter < 24*time.Hour:
 		return invalid("DeleteUnusedAfter", "must be 0 (off) or at least one day, got %s", c.DeleteUnusedAfter)
+	case c.TokenJWKSURL != "" && c.TokenJWKSFile != "":
+		return invalid("TokenJWKSFile", "must not be set together with TokenJWKSURL")
+	case !c.tokens() && (c.TokenIssuer != "" || c.TokenAudience != ""):
+		return invalid("TokenIssuer", "needs TokenJWKSURL or TokenJWKSFile, otherwise no token is checked")
+	case c.tokens() && c.TokenIssuer == "":
+		return invalid("TokenIssuer", "is required with access tokens")
+	case c.TokenLeeway < 0:
+		return invalid("TokenLeeway", "must not be negative")
+	}
+	if c.TokenJWKSURL != "" {
+		u, err := url.Parse(c.TokenJWKSURL)
+		local := u != nil && (u.Hostname() == "localhost" || u.Hostname() == "127.0.0.1" || u.Hostname() == "::1")
+		if err != nil || u.Host == "" || !(u.Scheme == "https" || u.Scheme == "http" && local) {
+			return invalid("TokenJWKSURL", "must be an https URL, or http on localhost, got %q", c.TokenJWKSURL)
+		}
 	}
 	for _, origin := range c.AllowedOrigins {
 		if origin == "" || strings.ContainsAny(origin, "/ ") {
@@ -154,10 +186,19 @@ func (c Config) Validate() error {
 	return nil
 }
 
+// tokens reports whether access tokens are required.
+func (c Config) tokens() bool {
+	return c.TokenJWKSURL != "" || c.TokenJWKSFile != ""
+}
+
 // Run validates the configuration, opens the store and serves until ctx is canceled. It then closes open connections
 // with "going away", so clients reconnect elsewhere, and returns after the shutdown.
 func Run(ctx context.Context, cfg Config, log *slog.Logger) error {
 	if err := cfg.Validate(); err != nil {
+		return err
+	}
+	tokens, err := newVerifier(cfg, log)
+	if err != nil {
 		return err
 	}
 	st, closeStore, err := openStore(ctx, cfg, log)
@@ -186,6 +227,7 @@ func Run(ctx context.Context, cfg Config, log *slog.Logger) error {
 		HelloTimeout:   cfg.HelloTimeout,
 		AllowedOrigins: cfg.AllowedOrigins,
 		ServerID:       cfg.ServerID,
+		Tokens:         tokens,
 	})
 	mux := http.NewServeMux()
 	mux.Handle("GET "+PathWebSocket, srv)
@@ -194,6 +236,31 @@ func Run(ctx context.Context, cfg Config, log *slog.Logger) error {
 
 	log.Info("starting server", "addr", cfg.Addr, "server_id", cfg.ServerID, "store", cfg.Store)
 	return platform.Serve(ctx, log, cfg.Addr, platform.Recover(log, mux), srv.Shutdown)
+}
+
+// newVerifier returns the checker for access tokens, or nil if they are not required.
+func newVerifier(cfg Config, log *slog.Logger) (*token.Verifier, error) {
+	if !cfg.tokens() {
+		log.Warn("no access tokens required: every client with a key pair can store databases")
+		return nil, nil
+	}
+	audience := cfg.TokenAudience
+	if audience == "" {
+		audience = cfg.ServerID
+	}
+	verifier, err := token.New(token.Config{
+		JWKSURL:  cfg.TokenJWKSURL,
+		JWKSFile: cfg.TokenJWKSFile,
+		Issuer:   cfg.TokenIssuer,
+		Audience: audience,
+		Leeway:   cfg.TokenLeeway,
+	}, log)
+	if err != nil {
+		return nil, invalid("TokenJWKSFile", "%v", err)
+	}
+	log.Info("access tokens required", "issuer", cfg.TokenIssuer, "audience", audience,
+		"jwks", cfg.TokenJWKSURL+cfg.TokenJWKSFile)
+	return verifier, nil
 }
 
 // openStore opens the configured store and returns it with a function that closes it.

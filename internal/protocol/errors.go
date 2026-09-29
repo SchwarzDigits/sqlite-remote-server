@@ -7,6 +7,7 @@ import (
 
 	pb "github.com/SchwarzDigits/sqlite-remote-server/internal/gen/sqlite_remote/v1"
 	"github.com/SchwarzDigits/sqlite-remote-server/internal/store"
+	"github.com/SchwarzDigits/sqlite-remote-server/internal/token"
 )
 
 var (
@@ -26,10 +27,13 @@ func errorFrame(requestID uint64, err error, log *slog.Logger) *pb.ServerFrame {
 		held     *store.LeaseHeldError
 		conflict *store.VersionConflictError
 		bad      *store.BadRequestError
+		denied   *token.DeniedError
 	)
 	switch {
 	case errors.Is(err, errUnauthenticated):
 		e.Code = pb.ErrorCode_ERROR_CODE_UNAUTHENTICATED
+	case errors.As(err, &denied):
+		e.Code = pb.ErrorCode_ERROR_CODE_ACCESS_DENIED
 	case errors.Is(err, store.ErrNotFound):
 		e.Code = pb.ErrorCode_ERROR_CODE_NOT_FOUND
 	case errors.Is(err, store.ErrFenced):

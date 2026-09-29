@@ -10,6 +10,7 @@ import (
 	"github.com/coder/websocket"
 
 	"github.com/SchwarzDigits/sqlite-remote-server/internal/store"
+	"github.com/SchwarzDigits/sqlite-remote-server/internal/token"
 )
 
 // Path is the WebSocket endpoint. It is the only path the ingress exposes publicly.
@@ -41,6 +42,10 @@ type Options struct {
 	ServerID string
 	// ChallengeTTL is how long a challenge is valid. Zero means 30 s.
 	ChallengeTTL time.Duration
+	// Tokens, if set, admits only clients with a valid access token bound to their key. After the token has expired,
+	// plus the verifier's leeway, the connection is closed at the next frame other than a Ping. Pings keep the
+	// leases renewed until the client reconnects with a new token.
+	Tokens *token.Verifier
 	// Now returns the current time. Nil means time.Now.
 	Now func() time.Time
 }

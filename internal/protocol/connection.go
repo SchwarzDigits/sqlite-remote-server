@@ -14,6 +14,7 @@ import (
 
 	pb "github.com/SchwarzDigits/sqlite-remote-server/internal/gen/sqlite_remote/v1"
 	"github.com/SchwarzDigits/sqlite-remote-server/internal/store"
+	"github.com/SchwarzDigits/sqlite-remote-server/internal/token"
 )
 
 const (
@@ -49,6 +50,8 @@ type connection struct {
 	subject  string
 	instance []byte
 	dbs      map[string]*openDB
+	// tokenExpires is the expiry of the access token. Zero without a token.
+	tokenExpires time.Time
 }
 
 type openDB struct {
@@ -119,6 +122,12 @@ func (c *connection) run(ctx context.Context) (websocket.StatusCode, string) {
 		if err != nil {
 			return c.readFailed(err)
 		}
+		if frame.GetPing() == nil && c.tokenExpired() {
+			// The client reconnects with a new token and resumes its leases. The request is not answered, so the
+			// client treats it like one sent before a connection loss.
+			c.log.Info("connection closed: the access token has expired")
+			return websocket.StatusPolicyViolation, "access token expired"
+		}
 		c.handle(ctx, frame)
 	}
 }
@@ -165,6 +174,9 @@ func (c *connection) hello(ctx context.Context, frame *pb.ClientFrame) error {
 	case len(hello.GetInstanceId()) == 0 || len(hello.GetInstanceId()) > maxInstanceIDBytes:
 		err = store.BadRequest("instance id must have 1 to %d bytes", maxInstanceIDBytes)
 	}
+	if err == nil && c.s.opts.Tokens != nil {
+		err = c.admit(ctx, hello)
+	}
 	if err != nil {
 		c.fail(ctx, frame.GetRequestId(), err)
 		return err
@@ -181,12 +193,40 @@ func (c *connection) hello(ctx context.Context, frame *pb.ClientFrame) error {
 	c.instance = bytes.Clone(hello.GetInstanceId())
 	c.log = c.log.With("subject", c.subject)
 	c.send(ctx, &pb.ServerFrame{RequestId: answering, Body: &pb.ServerFrame_HelloOk{HelloOk: &pb.HelloOk{
-		ProtocolVersion: Version,
-		MaxFrameBytes:   c.s.opts.MaxFrameBytes,
-		PingIntervalMs:  uint32(c.s.opts.PingInterval.Milliseconds()),
-		LeaseTtlMs:      uint32(c.s.opts.LeaseTTL.Milliseconds()),
+		ProtocolVersion:  Version,
+		MaxFrameBytes:    c.s.opts.MaxFrameBytes,
+		PingIntervalMs:   uint32(c.s.opts.PingInterval.Milliseconds()),
+		LeaseTtlMs:       uint32(c.s.opts.LeaseTTL.Milliseconds()),
+		AccessTokenTtlMs: c.tokenTTL(),
 	}}})
 	return nil
+}
+
+// admit checks the access token of a Hello. The token must be bound to the Ed25519 key the client logs in with.
+func (c *connection) admit(ctx context.Context, hello *pb.Hello) error {
+	if hello.GetSigAlg() != pb.SigAlg_SIG_ALG_ED25519 {
+		return &token.DeniedError{Reason: "access tokens are bound to Ed25519 keys only"}
+	}
+	expires, err := c.s.opts.Tokens.Verify(ctx, hello.GetAccessToken(), hello.GetPublicKey())
+	if err != nil {
+		c.log.Info("login refused", "error", err)
+		return err
+	}
+	c.tokenExpires = expires
+	return nil
+}
+
+// tokenTTL returns the remaining lifetime of the access token in milliseconds, 0 without a token.
+func (c *connection) tokenTTL() uint64 {
+	if c.tokenExpires.IsZero() {
+		return 0
+	}
+	return uint64(max(c.tokenExpires.Sub(c.s.opts.Now()).Milliseconds(), 1))
+}
+
+// tokenExpired reports whether the access token expired more than the leeway ago.
+func (c *connection) tokenExpired() bool {
+	return !c.tokenExpires.IsZero() && c.s.opts.Now().After(c.tokenExpires.Add(c.s.opts.Tokens.Leeway()))
 }
 
 // identify authenticates the client. It returns the subject and the request ID of the frame to answer.

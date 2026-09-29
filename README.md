@@ -19,6 +19,15 @@ Status: works and is tested, not yet in production use. Versions are 0.x: the pr
 - **Login by signature.** The client sends a public key, the server answers with a challenge, and the client signs
   it. The server derives the subject that owns the databases from the public key. A client cannot choose its subject,
   and no setting turns the login off.
+- **Access tokens (optional).** With a JWKS configured, the server admits only clients with an access token from a
+  token service: a JWT signed with EdDSA or ES256, with the configured issuer and audience, and a `cnf` claim
+  (RFC 7800) that holds the client's Ed25519 public key. A token is therefore useless without the private key. The
+  client sends it in its `Hello`; a missing or invalid token is rejected with `ERROR_CODE_ACCESS_DENIED`. `HelloOk`
+  tells the client the token's remaining lifetime, and the client reconnects with a new token before it expires.
+  After it has expired, plus the leeway, the server closes the connection at the next request. It still answers
+  pings until then, so the client's leases stay renewed. The JWKS is fetched again after its `max-age`, at most five
+  minutes, and when a token names an unknown key ID, at most once a minute. If fetching fails, the keys fetched
+  before stay in use for up to an hour.
 - **Change log.** For the last 1024 commits the server keeps the indexes of the blocks each commit changed. A client
   whose local copy is a few commits behind discards only those blocks instead of the whole copy.
 - **Deletion.** A client can delete a database it does not have open. The server removes the blocks and the change
@@ -81,6 +90,11 @@ it, so clients should use a separate login key for each server.
 | `SQLITE_REMOTE_PING_INTERVAL` | no | `10s` | interval at which idle clients ping |
 | `SQLITE_REMOTE_LEASE_TTL` | no | `30s` | time after the last renewal from which a lease can be taken without takeover, at least twice the ping interval |
 | `SQLITE_REMOTE_HELLO_TIMEOUT` | no | `5s` | time a client has to complete the login |
+| `SQLITE_REMOTE_TOKEN_JWKS_URL` | no | | JWKS of the token service, e.g. `https://tokens.example/.well-known/jwks.json`. Turns on access tokens, see [Features](#features). https, or http on localhost |
+| `SQLITE_REMOTE_TOKEN_JWKS_FILE` | no | | the JWKS as a file, read at start, instead of the URL |
+| `SQLITE_REMOTE_TOKEN_ISSUER` | with a JWKS | | required `iss` claim |
+| `SQLITE_REMOTE_TOKEN_AUDIENCE` | no | `SQLITE_REMOTE_SERVER_ID` | required `aud` claim |
+| `SQLITE_REMOTE_TOKEN_LEEWAY` | no | `1m` | allowance for clock differences when checking `exp` and `nbf` |
 | `SQLITE_REMOTE_DELETE_UNUSED_AFTER_DAYS` | no | `180` | days without use after which a database is deleted, see [Features](#features). `0` turns this off |
 
 ### Embedding
