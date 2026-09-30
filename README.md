@@ -14,8 +14,9 @@ Status: works and is tested, not yet in production use. Versions are 0.x: the pr
   version, otherwise it is rejected with a version conflict. A commit that a client sends again because the
   acknowledgement was lost is recognized by its commit ID and not applied twice.
 - **Leases and fencing.** Opening a database acquires its lease, the exclusive right to commit. If another instance
-  holds a valid lease, the open fails unless the client asks for a takeover. Every new lease has a higher epoch, and
-  commits with an older epoch are rejected.
+  holds a valid lease, the open fails unless the client asks for a takeover. The instance that holds the lease, by its
+  instance ID, gets a new lease without takeover, so a client that restarts with the same ID has its database back at
+  once. Every new lease has a higher epoch, and commits with an older epoch are rejected.
 - **Login by signature.** The client sends a public key, the server answers with a challenge, and the client signs
   it. The server derives the subject that owns the databases from the public key. A client cannot choose its subject,
   and no setting turns the login off.

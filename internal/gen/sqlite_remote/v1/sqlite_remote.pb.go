@@ -598,7 +598,9 @@ type Hello struct {
 	state protoimpl.MessageState `protogen:"open.v1"`
 	// Protocol version of the client. The server rejects a version other than its own with ERROR_CODE_BAD_REQUEST.
 	ProtocolVersion uint32 `protobuf:"varint,1,opt,name=protocol_version,json=protocolVersion,proto3" json:"protocol_version,omitempty"`
-	// Random id of the client instance, e.g. one browser tab or worker. 1 to 64 bytes.
+	// Id of the client instance, e.g. one browser tab or worker. 1 to 64 bytes. Usually random. A client that restarts
+	// may use the same id again to take back its own lease without takeover, see `Open.takeover`. Two instances that run
+	// at the same time must not use the same id.
 	InstanceId []byte `protobuf:"bytes,2,opt,name=instance_id,json=instanceId,proto3" json:"instance_id,omitempty"`
 	// Algorithm and public key of the client's key pair. The client proves possession of the private key with a
 	// `Proof`. The server derives the subject from the public key. The subject determines which databases the
@@ -895,7 +897,8 @@ type Open struct {
 	// ERROR_CODE_NOT_FOUND.
 	CreateIfMissing bool `protobuf:"varint,3,opt,name=create_if_missing,json=createIfMissing,proto3" json:"create_if_missing,omitempty"`
 	// Acquires the lease even if another instance holds one that has not expired. Without it, the open fails with
-	// ERROR_CODE_LEASE_HELD in that case.
+	// ERROR_CODE_LEASE_HELD in that case. The instance that holds the lease, identified by `Hello.instance_id`, gets a
+	// new lease without it: a client that restarted has lost its lease id and cannot resume. Its earlier lease is fenced.
 	Takeover bool `protobuf:"varint,4,opt,name=takeover,proto3" json:"takeover,omitempty"`
 	// Set only when reopening after a broken connection. Continues the previous lease instead of acquiring a new one.
 	Resume        *Resume `protobuf:"bytes,5,opt,name=resume,proto3" json:"resume,omitempty"`

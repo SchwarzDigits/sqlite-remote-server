@@ -46,6 +46,7 @@ func Run(t *testing.T, newStore func(t *testing.T) store.Store) {
 		{"FetchChecksVersionAndRange", fetchChecksVersionAndRange},
 		{"ActiveLeaseBlocksOpen", activeLeaseBlocksOpen},
 		{"TakeoverFencesOldLease", takeoverFencesOldLease},
+		{"SameInstanceTakesItsLeaseBack", sameInstanceTakesItsLeaseBack},
 		{"ExpiredLeaseNeedsNoTakeover", expiredLeaseNeedsNoTakeover},
 		{"ExpiredUntakenLeaseStillCommits", expiredUntakenLeaseStillCommits},
 		{"RenewExtendsLease", renewExtendsLease},
@@ -260,6 +261,26 @@ func activeLeaseBlocksOpen(t *testing.T, s store.Store) {
 	var held *store.LeaseHeldError
 	require.ErrorAs(t, err, &held)
 	require.True(t, held.Since.Equal(t0))
+}
+
+// A client that restarts with the same instance ID gets a new lease without takeover. Its earlier lease is fenced.
+// Another instance is still refused.
+func sameInstanceTakesItsLeaseBack(t *testing.T, s store.Store) {
+	k := key(t, "db")
+	old := create(t, s, k, instanceA, t0).Lease
+
+	res, err := open(s, k, instanceA, false, t0.Add(time.Second))
+	require.NoError(t, err, "the holder's own instance needs no takeover")
+	require.Greater(t, res.Lease.Epoch, old.Epoch)
+	require.True(t, res.Revoked, "the earlier lease had not expired")
+	_, err = commit(s, k, old.Epoch, 0, 1, commit1, t0.Add(time.Second), block(0, 0xa0))
+	requireFenced(t, err)
+	_, err = commit(s, k, res.Lease.Epoch, 0, 1, commit1, t0.Add(time.Second), block(0, 0xa1))
+	require.NoError(t, err)
+
+	_, err = open(s, k, instanceB, false, t0.Add(2*time.Second))
+	var held *store.LeaseHeldError
+	require.ErrorAs(t, err, &held, "another instance still needs takeover")
 }
 
 func takeoverFencesOldLease(t *testing.T, s store.Store) {

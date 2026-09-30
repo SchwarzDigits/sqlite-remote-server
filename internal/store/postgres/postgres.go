@@ -95,7 +95,7 @@ func (s *Store) Open(ctx context.Context, req store.OpenRequest) (store.OpenResu
 		}
 
 		active := row.LeaseHolder != nil && row.LeaseExpires.Valid && req.Now.Before(row.LeaseExpires.Time)
-		if active && !req.Takeover {
+		if active && !req.Takeover && !bytes.Equal(row.LeaseHolder, req.InstanceID) {
 			return &store.LeaseHeldError{Since: row.LeaseGranted.Time}
 		}
 		id := newLeaseID()

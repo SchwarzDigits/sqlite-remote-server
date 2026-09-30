@@ -91,7 +91,7 @@ func (s *Store) Open(_ context.Context, req store.OpenRequest) (store.OpenResult
 	}
 
 	active := db.holder != nil && req.Now.Before(db.expiresAt)
-	if active && !req.Takeover {
+	if active && !req.Takeover && !bytes.Equal(db.holder, req.InstanceID) {
 		return store.OpenResult{}, &store.LeaseHeldError{Since: db.grantedAt}
 	}
 	db.lease = store.Lease{ID: newLeaseID(), Epoch: db.lease.Epoch + 1}

@@ -49,7 +49,9 @@ type OpenRequest struct {
 	// PageSize is required to create a database. For an existing database it must be 0 or match.
 	PageSize uint32
 	Create   bool
-	// Takeover takes the lease even if another instance holds an unexpired lease.
+	// Takeover takes the lease even if another instance holds an unexpired lease. The instance that holds the lease
+	// (the same InstanceID) gets a new lease without it: a client that restarted has lost its lease ID and cannot
+	// resume. Its earlier lease is fenced, and Revoked is set.
 	Takeover bool
 	// Resume, if set, continues the given lease instead of granting a new one.
 	Resume *Resume
@@ -61,7 +63,8 @@ type OpenRequest struct {
 type OpenResult struct {
 	Lease Lease
 	State State
-	// Revoked is true if the open took the lease from an instance whose lease had not expired.
+	// Revoked is true if the open took an unexpired lease, from another instance or from an earlier lease of the same
+	// instance.
 	Revoked bool
 }
 
