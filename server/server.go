@@ -174,7 +174,8 @@ func (c Config) Validate() error {
 	if c.TokenJWKSURL != "" {
 		u, err := url.Parse(c.TokenJWKSURL)
 		local := u != nil && (u.Hostname() == "localhost" || u.Hostname() == "127.0.0.1" || u.Hostname() == "::1")
-		if err != nil || u.Host == "" || !(u.Scheme == "https" || u.Scheme == "http" && local) {
+		secure := u != nil && (u.Scheme == "https" || u.Scheme == "http" && local)
+		if err != nil || u.Host == "" || !secure {
 			return invalid("TokenJWKSURL", "must be an https URL, or http on localhost, got %q", c.TokenJWKSURL)
 		}
 	}
