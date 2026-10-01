@@ -74,6 +74,10 @@ type Config struct {
 	PingInterval time.Duration
 	// LeaseTTL is the time after the last renewal from which another instance can take a lease without takeover.
 	// It must be at least twice PingInterval, so that one lost ping does not cost a client its lease.
+	//
+	// A connected client's lease is written to the store every LeaseTTL/2, so a longer TTL means fewer writes. The
+	// cost is the wait for another instance after a client stopped without closing: up to LeaseTTL, unless it takes
+	// the database over. The same instance, by its instance ID, opens again at once.
 	LeaseTTL time.Duration
 	// HelloTimeout is the time a client has to complete the login.
 	HelloTimeout time.Duration
@@ -109,7 +113,7 @@ func DefaultConfig() Config {
 		MaxFrameBytes:     1 << 20,
 		MaxCommitBytes:    256 << 20,
 		PingInterval:      10 * time.Second,
-		LeaseTTL:          30 * time.Second,
+		LeaseTTL:          5 * time.Minute,
 		HelloTimeout:      5 * time.Second,
 		DeleteUnusedAfter: 180 * 24 * time.Hour,
 		TokenLeeway:       time.Minute,

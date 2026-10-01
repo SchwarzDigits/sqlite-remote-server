@@ -16,7 +16,8 @@ Status: works and is tested, not yet in production use. Versions are 0.x: the pr
 - **Leases and fencing.** Opening a database acquires its lease, the exclusive right to commit. If another instance
   holds a valid lease, the open fails unless the client asks for a takeover. The instance that holds the lease, by its
   instance ID, gets a new lease without takeover, so a client that restarts with the same ID has its database back at
-  once. Every new lease has a higher epoch, and commits with an older epoch are rejected.
+  once. Every new lease has a higher epoch, and commits with an older epoch are rejected. A client that stopped
+  without closing keeps its lease for up to five minutes (`LEASE_TTL`); until then another instance needs a takeover.
 - **Login by signature.** The client sends a public key, the server answers with a challenge, and the client signs
   it. The server derives the subject that owns the databases from the public key. A client cannot choose its subject,
   and no setting turns the login off.
@@ -89,7 +90,7 @@ it, so clients should use a separate login key for each server.
 | `SQLITE_REMOTE_MAX_FRAME_BYTES` | no | 1 MiB | largest frame, at least 65 KiB so that a block of the largest page size fits |
 | `SQLITE_REMOTE_MAX_COMMIT_BYTES` | no | 256 MiB | largest commit over all its parts, at least `MAX_FRAME_BYTES` |
 | `SQLITE_REMOTE_PING_INTERVAL` | no | `10s` | interval at which idle clients ping |
-| `SQLITE_REMOTE_LEASE_TTL` | no | `30s` | time after the last renewal from which a lease can be taken without takeover, at least twice the ping interval |
+| `SQLITE_REMOTE_LEASE_TTL` | no | `5m` | time after the last renewal from which a lease can be taken without takeover, at least twice the ping interval. A connected client's lease is written to the store every half TTL: a longer TTL means fewer writes, and a longer wait for another instance after a client stopped without closing |
 | `SQLITE_REMOTE_HELLO_TIMEOUT` | no | `5s` | time a client has to complete the login |
 | `SQLITE_REMOTE_TOKEN_JWKS_URL` | no | | JWKS of the token service, e.g. `https://tokens.example/.well-known/jwks.json`. Turns on access tokens, see [Features](#features). https, or http on localhost |
 | `SQLITE_REMOTE_TOKEN_JWKS_FILE` | no | | the JWKS as a file, read at start, instead of the URL |
