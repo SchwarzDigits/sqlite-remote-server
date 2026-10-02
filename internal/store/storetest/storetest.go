@@ -66,6 +66,12 @@ func Run(t *testing.T, newStore func(t *testing.T) store.Store) {
 		{"RecreatedDatabaseMayChangePageSize", recreatedDatabaseMayChangePageSize},
 		{"DeleteUnusedKeepsUsedDatabases", deleteUnusedKeepsUsedDatabases},
 		{"DeleteUnusedRespectsLimit", deleteUnusedRespectsLimit},
+		{"ClaimFreeSlot", claimFreeSlot},
+		{"ReclaimKeepsClaimTime", reclaimKeepsClaimTime},
+		{"ClaimReplacesOtherKey", claimReplacesOtherKey},
+		{"SlotBlocksOwnersOtherKeys", slotBlocksOwnersOtherKeys},
+		{"DeleteSlotPurgesHolder", deleteSlotPurgesHolder},
+		{"DeleteUnusedReleasesSlots", deleteUnusedReleasesSlots},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			tc.run(t, newStore(t))
@@ -658,4 +664,167 @@ func deleteUnusedRespectsLimit(t *testing.T, s store.Store) {
 		mine = 1
 	}
 	require.Len(t, deleteUnused(t, s, cutoff), 3-mine, "later calls delete the rest")
+}
+
+func owner(t *testing.T) string {
+	t.Helper()
+	return "owner-" + t.Name() + "-" + run
+}
+
+func claim(t *testing.T, s store.Store, owner, subject, label string, now time.Time) store.ClaimResult {
+	t.Helper()
+	res, err := s.ClaimSlot(context.Background(), store.ClaimRequest{Owner: owner, Subject: subject, Label: label, Now: now})
+	require.NoError(t, err)
+	return res
+}
+
+func openAs(s store.Store, owner string, k store.Key, create bool, now time.Time) (store.OpenResult, error) {
+	return s.Open(context.Background(), store.OpenRequest{
+		Key: k, Owner: owner, InstanceID: instanceA, PageSize: pageSize, Create: create, Now: now, TTL: ttl,
+	})
+}
+
+func claimFreeSlot(t *testing.T, s store.Store) {
+	o, alice := owner(t), subject(t, "alice")
+	_, ok, err := s.GetSlot(context.Background(), o)
+	require.NoError(t, err)
+	require.False(t, ok)
+
+	res := claim(t, s, o, alice, "device-1", t0)
+	require.Nil(t, res.Replaced)
+	require.Empty(t, res.Deleted)
+	want := store.Slot{Subject: alice, Label: "device-1", ClaimedAt: t0}
+	require.Equal(t, want.Subject, res.Slot.Subject)
+	require.Equal(t, want.Label, res.Slot.Label)
+	require.True(t, want.ClaimedAt.Equal(res.Slot.ClaimedAt))
+
+	got, ok, err := s.GetSlot(context.Background(), o)
+	require.NoError(t, err)
+	require.True(t, ok)
+	require.Equal(t, alice, got.Subject)
+	require.Equal(t, "device-1", got.Label)
+	require.True(t, t0.Equal(got.ClaimedAt))
+}
+
+func reclaimKeepsClaimTime(t *testing.T, s store.Store) {
+	o, alice := owner(t), subject(t, "alice")
+	k := key(t, "db")
+	claim(t, s, o, alice, "device-1", t0)
+	create(t, s, k, instanceA, t0)
+
+	res := claim(t, s, o, alice, "renamed", t0.Add(time.Hour))
+	require.Nil(t, res.Replaced, "the slot did not change hands")
+	require.Empty(t, res.Deleted)
+	require.Equal(t, "renamed", res.Slot.Label)
+	require.True(t, t0.Equal(res.Slot.ClaimedAt), "the claim time stays")
+	_, err := openAs(s, o, k, false, t0.Add(time.Hour))
+	require.NoError(t, err, "the holder's databases stay")
+}
+
+func claimReplacesOtherKey(t *testing.T, s store.Store) {
+	o, alice, bob := owner(t), subject(t, "alice"), subject(t, "bob")
+	claim(t, s, o, alice, "device-1", t0)
+	first, second := key(t, "first"), key(t, "second")
+	for _, k := range []store.Key{second, first} {
+		lease := create(t, s, k, instanceA, t0).Lease
+		_, err := commit(s, k, lease.Epoch, 0, 1, commit1, t0, block(0, 0xa1))
+		require.NoError(t, err)
+	}
+	deleted := key(t, "deleted")
+	create(t, s, deleted, instanceA, t0)
+	_, err := remove(s, deleted, true, t0)
+	require.NoError(t, err)
+
+	res := claim(t, s, o, bob, "device-2", t0.Add(time.Minute))
+	require.NotNil(t, res.Replaced)
+	require.Equal(t, alice, res.Replaced.Subject)
+	require.Equal(t, "device-1", res.Replaced.Label)
+	require.Equal(t, []store.Key{first, second}, res.Deleted, "the replaced key's databases, sorted, without deleted ones")
+	require.Equal(t, bob, res.Slot.Subject)
+	require.True(t, t0.Add(time.Minute).Equal(res.Slot.ClaimedAt))
+
+	_, err = openAs(s, o, first, false, t0.Add(time.Minute))
+	require.ErrorIs(t, err, store.ErrSlotTaken, "the owner's old key is locked out")
+	for _, k := range []store.Key{first, deleted} {
+		_, err = openAs(s, "", k, false, t0.Add(time.Minute))
+		require.ErrorIs(t, err, store.ErrNotFound, "%s is gone", k.DBID)
+		again, err := openAs(s, "", k, true, t0.Add(time.Minute))
+		require.NoError(t, err)
+		require.Zero(t, again.State.Version, "%s left no record", k.DBID)
+	}
+}
+
+func slotBlocksOwnersOtherKeys(t *testing.T, s store.Store) {
+	o, alice, bob := owner(t), subject(t, "alice"), subject(t, "bob")
+	ka := key(t, "db")
+	kb := store.Key{Subject: bob, DBID: "db"}
+	// Created with the instance openAs uses, so that the instance's own lease does not block the opens below.
+	lease := create(t, s, kb, instanceA, t0).Lease
+	claim(t, s, o, alice, "device-1", t0)
+
+	_, err := openAs(s, o, ka, true, t0)
+	require.NoError(t, err, "the holder opens")
+	_, err = openAs(s, o, kb, false, t0)
+	require.ErrorIs(t, err, store.ErrSlotTaken)
+	_, err = s.Open(context.Background(), store.OpenRequest{
+		Key: kb, Owner: o, InstanceID: instanceA, Resume: &store.Resume{LeaseID: lease.ID, LeaseEpoch: lease.Epoch},
+		Now: t0, TTL: ttl,
+	})
+	require.ErrorIs(t, err, store.ErrSlotTaken, "also when resuming")
+	_, err = openAs(s, "", kb, false, t0)
+	require.NoError(t, err, "without an owner the slot does not apply")
+	_, err = openAs(s, owner(t)+"-other", kb, false, t0)
+	require.NoError(t, err, "another owner's slot does not apply")
+}
+
+func deleteSlotPurgesHolder(t *testing.T, s store.Store) {
+	o, alice, bob := owner(t), subject(t, "alice"), subject(t, "bob")
+	k := key(t, "db")
+	claim(t, s, o, alice, "device-1", t0)
+	create(t, s, k, instanceA, t0)
+
+	_, err := s.DeleteSlot(context.Background(), o, bob)
+	require.ErrorIs(t, err, store.ErrSlotTaken, "only the holder deletes the slot")
+	_, err = openAs(s, o, k, false, t0)
+	require.NoError(t, err, "nothing was deleted")
+
+	deleted, err := s.DeleteSlot(context.Background(), o, alice)
+	require.NoError(t, err)
+	require.Equal(t, []store.Key{k}, deleted)
+	_, ok, err := s.GetSlot(context.Background(), o)
+	require.NoError(t, err)
+	require.False(t, ok)
+	_, err = openAs(s, o, k, false, t0)
+	require.ErrorIs(t, err, store.ErrNotFound)
+	again, err := openAs(s, o, k, true, t0)
+	require.NoError(t, err)
+	require.Zero(t, again.State.Version, "no record stays")
+
+	deleted, err = s.DeleteSlot(context.Background(), o, alice)
+	require.NoError(t, err, "without a slot only the key's databases are deleted")
+	require.Equal(t, []store.Key{k}, deleted)
+}
+
+func deleteUnusedReleasesSlots(t *testing.T, s store.Store) {
+	cutoff := longAgo.AddDate(0, 6, 0)
+	o, alice := owner(t), subject(t, "alice")
+	k := key(t, "db")
+	claim(t, s, o, alice, "device-1", longAgo)
+	create(t, s, k, instanceA, longAgo)
+
+	// A slot claimed after the cutoff whose key has no databases yet stays.
+	fresh := owner(t) + "-fresh"
+	claim(t, s, fresh, subject(t, "carol"), "device-3", cutoff)
+
+	require.Equal(t, []store.Key{k}, deleteUnused(t, s, cutoff))
+	_, ok, err := s.GetSlot(context.Background(), o)
+	require.NoError(t, err)
+	require.False(t, ok, "the slot of a key without databases is released")
+	_, ok, err = s.GetSlot(context.Background(), fresh)
+	require.NoError(t, err)
+	require.True(t, ok, "a slot claimed after the cutoff stays")
+
+	again, err := openAs(s, o, k, true, t0)
+	require.NoError(t, err)
+	require.Zero(t, again.State.Version, "the database of a slot holder left no record")
 }

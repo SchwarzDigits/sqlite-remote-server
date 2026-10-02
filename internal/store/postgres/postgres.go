@@ -11,6 +11,7 @@ import (
 	"fmt"
 	"maps"
 	"slices"
+	"strings"
 	"time"
 
 	"github.com/jackc/pgx/v5"
@@ -63,6 +64,17 @@ func New(pool *pgxpool.Pool) *Store {
 func (s *Store) Open(ctx context.Context, req store.OpenRequest) (store.OpenResult, error) {
 	var result store.OpenResult
 	err := s.inTx(ctx, func(q *db.Queries) error {
+		if req.Owner != "" {
+			// Taken before the database row, as ClaimSlot does, so that the two cannot deadlock.
+			slot, err := q.ShareSlot(ctx, req.Owner)
+			switch {
+			case errors.Is(err, pgx.ErrNoRows):
+			case err != nil:
+				return err
+			case slot.Subject != req.Key.Subject:
+				return store.ErrSlotTaken
+			}
+		}
 		row, err := q.LockDatabase(ctx, db.LockDatabaseParams{Subject: req.Key.Subject, DbID: req.Key.DBID})
 		if errors.Is(err, pgx.ErrNoRows) {
 			row, err = createDatabase(ctx, q, req)
@@ -462,7 +474,17 @@ func (s *Store) DeleteUnused(ctx context.Context, cutoff time.Time, limit int) (
 			if row.Deleted || !row.LeaseExpires.Valid || !row.LeaseExpires.Time.Before(cutoff) {
 				return nil
 			}
-			if _, err := remove(ctx, q, k); err != nil {
+			holds, err := q.HoldsSlot(ctx, k.Subject)
+			if err != nil {
+				return err
+			}
+			if holds {
+				// While the key holds the slot, no other key of the owner opens databases, so no record is needed.
+				err = q.PurgeDatabase(ctx, db.PurgeDatabaseParams{Subject: k.Subject, DbID: k.DBID})
+			} else {
+				_, err = remove(ctx, q, k)
+			}
+			if err != nil {
 				return err
 			}
 			removed = true
@@ -475,7 +497,116 @@ func (s *Store) DeleteUnused(ctx context.Context, cutoff time.Time, limit int) (
 			deleted = append(deleted, k)
 		}
 	}
+	if err := s.q.ReleaseUnusedSlots(ctx, timestamp(cutoff)); err != nil {
+		return deleted, err
+	}
 	return deleted, nil
+}
+
+// GetSlot implements store.Store.
+func (s *Store) GetSlot(ctx context.Context, owner string) (store.Slot, bool, error) {
+	row, err := s.q.GetSlot(ctx, owner)
+	switch {
+	case errors.Is(err, pgx.ErrNoRows):
+		return store.Slot{}, false, nil
+	case err != nil:
+		return store.Slot{}, false, err
+	}
+	return slotOf(row), true, nil
+}
+
+// ClaimSlot implements store.Store.
+func (s *Store) ClaimSlot(ctx context.Context, req store.ClaimRequest) (store.ClaimResult, error) {
+	var result store.ClaimResult
+	err := s.inTx(ctx, func(q *db.Queries) error {
+		result = store.ClaimResult{}
+		row, err := q.LockSlot(ctx, req.Owner)
+		if errors.Is(err, pgx.ErrNoRows) {
+			row, err = q.InsertSlot(ctx, db.InsertSlotParams{
+				Owner: req.Owner, Subject: req.Subject, Label: req.Label, ClaimedAt: timestamp(req.Now),
+			})
+			if err == nil {
+				result.Slot = slotOf(row)
+				return nil
+			}
+			if errors.Is(err, pgx.ErrNoRows) {
+				// Another transaction inserted the slot first.
+				row, err = q.LockSlot(ctx, req.Owner)
+			}
+		}
+		if err != nil {
+			return err
+		}
+		claimedAt := timestamp(req.Now)
+		if row.Subject == req.Subject {
+			claimedAt = row.ClaimedAt
+		} else {
+			replaced := slotOf(row)
+			result.Replaced = &replaced
+			purged, err := q.PurgeSubject(ctx, row.Subject)
+			if err != nil {
+				return err
+			}
+			result.Deleted = keysOf(row.Subject, purged)
+		}
+		updated, err := q.UpdateSlot(ctx, db.UpdateSlotParams{
+			Owner: req.Owner, Subject: req.Subject, Label: req.Label, ClaimedAt: claimedAt,
+		})
+		if err != nil {
+			return err
+		}
+		result.Slot = slotOf(updated)
+		return nil
+	})
+	if err != nil {
+		return store.ClaimResult{}, err
+	}
+	return result, nil
+}
+
+// DeleteSlot implements store.Store.
+func (s *Store) DeleteSlot(ctx context.Context, owner, subject string) ([]store.Key, error) {
+	var deleted []store.Key
+	err := s.inTx(ctx, func(q *db.Queries) error {
+		row, err := q.LockSlot(ctx, owner)
+		switch {
+		case errors.Is(err, pgx.ErrNoRows):
+		case err != nil:
+			return err
+		case row.Subject != subject:
+			return store.ErrSlotTaken
+		default:
+			if err := q.DeleteSlotOf(ctx, owner); err != nil {
+				return err
+			}
+		}
+		purged, err := q.PurgeSubject(ctx, subject)
+		if err != nil {
+			return err
+		}
+		deleted = keysOf(subject, purged)
+		return nil
+	})
+	if err != nil {
+		return nil, err
+	}
+	return deleted, nil
+}
+
+func slotOf(row db.Slot) store.Slot {
+	return store.Slot{Subject: row.Subject, Label: row.Label, ClaimedAt: row.ClaimedAt.Time}
+}
+
+// keysOf returns the keys of the purged databases that were not deleted before, sorted.
+func keysOf(subject string, purged []db.PurgeSubjectRow) []store.Key {
+	var keys []store.Key
+	for _, row := range purged {
+		if !row.Deleted {
+			keys = append(keys, store.Key{Subject: subject, DBID: row.DbID})
+		}
+	}
+	slices.SortFunc(keys, func(a, b store.Key) int { return strings.Compare(a.DBID, b.DBID) })
+	return keys
 }
 
 // remove deletes the blocks and the change log of a locked database and marks it as deleted. It returns the new lease

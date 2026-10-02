@@ -122,6 +122,14 @@ func samples() []sample {
 		{"server_error_lease_held", &pb.ServerFrame{RequestId: 2, Body: &pb.ServerFrame_Error{Error: &pb.Error{
 			Code: pb.ErrorCode_ERROR_CODE_LEASE_HELD, Detail: "another instance holds the lease", LeaseHolderSinceMs: timeMs,
 		}}}},
+		{"client_claim_slot", &pb.ClientFrame{RequestId: 8, Body: &pb.ClientFrame_ClaimSlot{ClaimSlot: &pb.ClaimSlot{}}}},
+		{"server_slot", &pb.ServerFrame{RequestId: 8, Body: &pb.ServerFrame_Slot{Slot: &pb.Slot{
+			Label: "device-2", ClaimedAtMs: timeMs, ReplacedLabel: "device-1",
+		}}}},
+		{"client_delete_slot", &pb.ClientFrame{RequestId: 9, Body: &pb.ClientFrame_DeleteSlot{DeleteSlot: &pb.DeleteSlot{}}}},
+		{"server_error_slot_taken", &pb.ServerFrame{RequestId: 3, Body: &pb.ServerFrame_Error{Error: &pb.Error{
+			Code: pb.ErrorCode_ERROR_CODE_SLOT_TAKEN, Detail: "another key holds the slot",
+		}}}},
 	}
 }
 

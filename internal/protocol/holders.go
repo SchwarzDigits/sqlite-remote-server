@@ -49,6 +49,21 @@ func (h *holders) remove(key store.Key, owner *connection) {
 	}
 }
 
+// purge removes the holder of key after the database was deleted completely, with its record. There is no new epoch,
+// so the holder's revoked callback gets its own epoch plus one.
+func (h *holders) purge(key store.Key) {
+	h.mu.Lock()
+	previous, ok := h.m[key]
+	if ok {
+		delete(h.m, key)
+	}
+	h.mu.Unlock()
+
+	if ok {
+		go previous.revoked(previous.epoch + 1)
+	}
+}
+
 // revoke removes the holder of key after the database was deleted. If its lease is older than epoch, revoke calls its
 // revoked callback.
 func (h *holders) revoke(key store.Key, epoch uint64) {

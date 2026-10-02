@@ -37,3 +37,10 @@ type Database struct {
 	LeaseExpires pgtype.Timestamptz
 	Deleted      bool
 }
+
+type Slot struct {
+	Owner     string
+	Subject   string
+	Label     string
+	ClaimedAt pgtype.Timestamptz
+}

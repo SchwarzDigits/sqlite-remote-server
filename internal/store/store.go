@@ -44,7 +44,10 @@ type Resume struct {
 
 // OpenRequest opens a database and takes its lease.
 type OpenRequest struct {
-	Key        Key
+	Key Key
+	// Owner is the owner of the client's key, the `sub` of its access token. Empty without access tokens. If another
+	// key holds the owner's slot, Open returns ErrSlotTaken, also for a Resume. See Store.ClaimSlot.
+	Owner      string
 	InstanceID []byte
 	// PageSize is required to create a database. For an existing database it must be 0 or match.
 	PageSize uint32
@@ -123,6 +126,32 @@ type ChangeSet struct {
 	Complete bool
 }
 
+// Slot is an owner's slot: the key that holds it, identified by its subject, and a label, e.g. the id of the
+// client's device. An owner has at most one slot.
+type Slot struct {
+	Subject   string
+	Label     string
+	ClaimedAt time.Time
+}
+
+// ClaimRequest passes an owner's slot to a key.
+type ClaimRequest struct {
+	Owner   string
+	Subject string
+	Label   string
+	Now     time.Time
+}
+
+// ClaimResult describes a claim.
+type ClaimResult struct {
+	// Slot is the owner's slot after the claim.
+	Slot Slot
+	// Replaced is the slot before the claim if another key held it, otherwise nil.
+	Replaced *Slot
+	// Deleted lists the databases of the replaced key. The claim deleted them completely.
+	Deleted []Key
+}
+
 // Store keeps the databases. Implementations must be safe for concurrent use.
 //
 // A lease stays valid until another instance takes it or its holder releases it. Expiry only decides whether another
@@ -152,7 +181,19 @@ type Store interface {
 	// and returns their keys. Every open, commit and lease renewal extends the lease, so its expiry marks the last
 	// use of the database. A database whose lease expires at or after cutoff is kept. Several callers may run at
 	// once; each database is deleted by one of them.
+	//
+	// The databases of a key that holds a slot are deleted completely, without a record. A slot that was claimed
+	// before cutoff and whose key has no databases left is released.
 	DeleteUnused(ctx context.Context, cutoff time.Time, limit int) ([]Key, error)
+	// GetSlot returns the owner's slot, and false if the owner has none.
+	GetSlot(ctx context.Context, owner string) (Slot, bool, error)
+	// ClaimSlot passes the owner's slot to req.Subject. If another key held it, all databases of that key are deleted
+	// completely: unlike Delete, no record stays. Claiming a slot that req.Subject already holds updates the label and
+	// keeps ClaimedAt.
+	ClaimSlot(ctx context.Context, req ClaimRequest) (ClaimResult, error)
+	// DeleteSlot releases the owner's slot and deletes all databases of subject completely. If another key holds the
+	// slot, it returns ErrSlotTaken and deletes nothing. It returns the deleted databases.
+	DeleteSlot(ctx context.Context, owner, subject string) ([]Key, error)
 	// Ping checks that the store is reachable. The readiness endpoint uses it.
 	Ping(ctx context.Context) error
 }
@@ -162,6 +203,8 @@ var (
 	ErrNotFound = errors.New("database not found")
 	// ErrFenced means the lease epoch is not the current one. Another instance took the lease, or it was released.
 	ErrFenced = errors.New("lease epoch is stale")
+	// ErrSlotTaken means another key holds the owner's slot.
+	ErrSlotTaken = errors.New("another key holds the owner's slot")
 )
 
 // LeaseHeldError means another instance holds a lease that has not expired.

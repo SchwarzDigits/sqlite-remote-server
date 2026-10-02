@@ -22,7 +22,10 @@ import (
 	"github.com/SchwarzDigits/sqlite-remote-server/internal/token"
 )
 
-const tokenIssuer = "https://tokens.test"
+const (
+	tokenIssuer    = "https://tokens.test"
+	testLabelClaim = "device"
+)
 
 // issuer is a token service for the tests.
 type issuer struct {
@@ -44,6 +47,7 @@ func withTokens(t *testing.T) (*issuer, func(*protocol.Options)) {
 	return &issuer{t: t, key: private}, func(o *protocol.Options) {
 		verifier, err := token.New(token.Config{
 			JWKSFile: path, Issuer: tokenIssuer, Audience: testServerID, Leeway: time.Minute, Now: o.Now,
+			LabelClaim: testLabelClaim,
 		}, slog.New(slog.NewTextHandler(io.Discard, nil)))
 		require.NoError(t, err)
 		o.Tokens = verifier
@@ -53,15 +57,21 @@ func withTokens(t *testing.T) (*issuer, func(*protocol.Options)) {
 // issue returns a token for client that expires at expires.
 func (i *issuer) issue(client ed25519.PublicKey, expires time.Time) string {
 	i.t.Helper()
-	tok := jwt.NewWithClaims(jwt.SigningMethodEdDSA, jwt.MapClaims{
-		"iss": tokenIssuer,
-		"aud": testServerID,
+	return i.sign(jwt.MapClaims{
 		"sub": "user@example.test",
 		"exp": expires.Unix(),
 		"cnf": map[string]any{"jwk": map[string]string{
 			"kty": "OKP", "crv": "Ed25519", "x": base64.RawURLEncoding.EncodeToString(client),
 		}},
 	})
+}
+
+// sign adds iss and aud to claims and signs them.
+func (i *issuer) sign(claims jwt.MapClaims) string {
+	i.t.Helper()
+	claims["iss"] = tokenIssuer
+	claims["aud"] = testServerID
+	tok := jwt.NewWithClaims(jwt.SigningMethodEdDSA, claims)
 	tok.Header["kid"] = "k1"
 	signed, err := tok.SignedString(i.key)
 	require.NoError(i.t, err)

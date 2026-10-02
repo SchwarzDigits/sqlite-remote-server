@@ -11,6 +11,7 @@ import (
 	"crypto/ecdsa"
 	"crypto/ed25519"
 	"encoding/base64"
+	"encoding/json"
 	"errors"
 	"fmt"
 	"log/slog"
@@ -33,6 +34,9 @@ type Config struct {
 	Issuer string
 	// Audience must be the aud claim, or one of its values.
 	Audience string
+	// LabelClaim names the claim that holds the label of the client's slot, e.g. the id of its device. Empty means
+	// slots have no label.
+	LabelClaim string
 	// Leeway allows for clock differences in exp and nbf.
 	Leeway time.Duration
 	// HTTPClient fetches the JWKS. Nil means a client with a timeout of 10 s.
@@ -43,10 +47,20 @@ type Config struct {
 
 // Verifier checks tokens. It is safe for concurrent use.
 type Verifier struct {
-	keys   *keySet
-	parser *jwt.Parser
-	leeway time.Duration
-	now    func() time.Time
+	keys       *keySet
+	parser     *jwt.Parser
+	leeway     time.Duration
+	now        func() time.Time
+	labelClaim string
+}
+
+// Grant is what a valid token says about its client.
+type Grant struct {
+	Expires time.Time
+	// Owner is the token's sub: the owner of the client's key and of its slot. Empty if the token has no sub.
+	Owner string
+	// Label is the value of Config.LabelClaim, empty if that is not configured or the token has no such string claim.
+	Label string
 }
 
 // DeniedError reports why a token was rejected.
@@ -90,8 +104,9 @@ func New(cfg Config, log *slog.Logger) (*Verifier, error) {
 			jwt.WithLeeway(cfg.Leeway),
 			jwt.WithTimeFunc(cfg.Now),
 		),
-		leeway: cfg.Leeway,
-		now:    cfg.Now,
+		leeway:     cfg.Leeway,
+		now:        cfg.Now,
+		labelClaim: cfg.LabelClaim,
 	}, nil
 }
 
@@ -109,13 +124,69 @@ type claims struct {
 			X   string `json:"x"`
 		} `json:"jwk"`
 	} `json:"cnf"`
+	// all holds every claim, for the label claim, whose name is configured.
+	all map[string]json.RawMessage
 }
 
-// Verify checks a token for a client that logs in with the Ed25519 key publicKey and returns the token's expiry. A
-// rejected token returns a *DeniedError.
-func (v *Verifier) Verify(ctx context.Context, token string, publicKey []byte) (time.Time, error) {
+func (c *claims) UnmarshalJSON(data []byte) error {
+	type fields claims
+	if err := json.Unmarshal(data, (*fields)(c)); err != nil {
+		return err
+	}
+	return json.Unmarshal(data, &c.all)
+}
+
+// label returns the string claim name, or "" if name is empty or the claim is missing or not a string.
+func (c *claims) label(name string) string {
+	var label string
+	if name == "" || json.Unmarshal(c.all[name], &label) != nil {
+		return ""
+	}
+	return label
+}
+
+// Verify checks a token for a client that logs in with the Ed25519 key publicKey. A rejected token returns a
+// *DeniedError.
+func (v *Verifier) Verify(ctx context.Context, token string, publicKey []byte) (Grant, error) {
+	c, err := v.parse(ctx, token)
+	if err != nil {
+		return Grant{}, err
+	}
+	if c.Cnf == nil || c.Cnf.JWK == nil {
+		return Grant{}, denied("no cnf.jwk claim that binds the token to a key")
+	}
+	jwk := c.Cnf.JWK
+	if jwk.Kty != "OKP" || jwk.Crv != "Ed25519" {
+		return Grant{}, denied("cnf.jwk must be an Ed25519 key, got %s %s", jwk.Kty, jwk.Crv)
+	}
+	bound, err := base64.RawURLEncoding.DecodeString(jwk.X)
+	if err != nil || len(bound) != ed25519.PublicKeySize {
+		return Grant{}, denied("cnf.jwk.x is not a base64url Ed25519 key")
+	}
+	if !bytes.Equal(bound, publicKey) {
+		return Grant{}, denied("the token is bound to another key")
+	}
+	return v.grant(c), nil
+}
+
+// VerifyUnbound checks a token without requiring that it is bound to a key. Only requests that need no proof of a key
+// accept such a token, e.g. looking up the owner's slot. A rejected token returns a *DeniedError.
+func (v *Verifier) VerifyUnbound(ctx context.Context, token string) (Grant, error) {
+	c, err := v.parse(ctx, token)
+	if err != nil {
+		return Grant{}, err
+	}
+	return v.grant(c), nil
+}
+
+func (v *Verifier) grant(c *claims) Grant {
+	return Grant{Expires: c.ExpiresAt.Time, Owner: c.Subject, Label: c.label(v.labelClaim)}
+}
+
+// parse checks the signature, issuer, audience and times of a token and returns its claims.
+func (v *Verifier) parse(ctx context.Context, token string) (*claims, error) {
 	if token == "" {
-		return time.Time{}, denied("no access token")
+		return nil, denied("no access token")
 	}
 	var c claims
 	_, err := v.parser.ParseWithClaims(token, &c, func(t *jwt.Token) (any, error) {
@@ -149,23 +220,9 @@ func (v *Verifier) Verify(ctx context.Context, token string, publicKey []byte) (
 	if err != nil {
 		var rejected *DeniedError
 		if errors.As(err, &rejected) {
-			return time.Time{}, rejected
+			return nil, rejected
 		}
-		return time.Time{}, denied("%v", err)
+		return nil, denied("%v", err)
 	}
-	if c.Cnf == nil || c.Cnf.JWK == nil {
-		return time.Time{}, denied("no cnf.jwk claim that binds the token to a key")
-	}
-	jwk := c.Cnf.JWK
-	if jwk.Kty != "OKP" || jwk.Crv != "Ed25519" {
-		return time.Time{}, denied("cnf.jwk must be an Ed25519 key, got %s %s", jwk.Kty, jwk.Crv)
-	}
-	bound, err := base64.RawURLEncoding.DecodeString(jwk.X)
-	if err != nil || len(bound) != ed25519.PublicKeySize {
-		return time.Time{}, denied("cnf.jwk.x is not a base64url Ed25519 key")
-	}
-	if !bytes.Equal(bound, publicKey) {
-		return time.Time{}, denied("the token is bound to another key")
-	}
-	return c.ExpiresAt.Time, nil
+	return &c, nil
 }

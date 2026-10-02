@@ -50,6 +50,10 @@ type connection struct {
 	subject  string
 	instance []byte
 	dbs      map[string]*openDB
+	// owner and label come from the access token: the owner of the key and the label of its slot. Empty without
+	// access tokens.
+	owner string
+	label string
 	// tokenExpires is the expiry of the access token. Zero without a token.
 	tokenExpires time.Time
 }
@@ -207,12 +211,14 @@ func (c *connection) admit(ctx context.Context, hello *pb.Hello) error {
 	if hello.GetSigAlg() != pb.SigAlg_SIG_ALG_ED25519 {
 		return &token.DeniedError{Reason: "access tokens are bound to Ed25519 keys only"}
 	}
-	expires, err := c.s.opts.Tokens.Verify(ctx, hello.GetAccessToken(), hello.GetPublicKey())
+	grant, err := c.s.opts.Tokens.Verify(ctx, hello.GetAccessToken(), hello.GetPublicKey())
 	if err != nil {
 		c.log.Info("login refused", "error", err)
 		return err
 	}
-	c.tokenExpires = expires
+	c.tokenExpires = grant.Expires
+	c.owner = grant.Owner
+	c.label = grant.Label
 	return nil
 }
 
@@ -301,6 +307,10 @@ func (c *connection) handle(ctx context.Context, frame *pb.ClientFrame) {
 		c.closeDB(ctx, id, body.CloseDb)
 	case *pb.ClientFrame_Delete:
 		c.deleteDB(ctx, id, body.Delete)
+	case *pb.ClientFrame_ClaimSlot:
+		c.claimSlot(ctx, id)
+	case *pb.ClientFrame_DeleteSlot:
+		c.deleteSlot(ctx, id)
 	case *pb.ClientFrame_Hello:
 		c.fail(ctx, id, store.BadRequest("Hello was already sent"))
 	default:
@@ -325,6 +335,7 @@ func (c *connection) open(ctx context.Context, id uint64, req *pb.Open) {
 	now := c.s.opts.Now()
 	res, err := c.s.opts.Store.Open(ctx, store.OpenRequest{
 		Key:        key,
+		Owner:      c.owner,
 		InstanceID: c.instance,
 		PageSize:   req.GetPageSize(),
 		Create:     req.GetCreateIfMissing(),
@@ -384,7 +395,7 @@ func (c *connection) fetch(ctx context.Context, id uint64, req *pb.Fetch) {
 	for _, r := range ranges {
 		blocks, err := c.s.opts.Store.Fetch(ctx, db.key, req.GetVersion(), r.GetFirstBlock(), r.GetCount())
 		if err != nil {
-			c.fail(ctx, id, err)
+			c.fail(ctx, id, gone(err))
 			return
 		}
 		runs = append(runs, blocks)
@@ -420,7 +431,7 @@ func (c *connection) changed(ctx context.Context, id uint64, req *pb.Changed) {
 	}
 	set, err := c.s.opts.Store.Changes(ctx, db.key, req.GetFromVersion())
 	if err != nil {
-		c.fail(ctx, id, err)
+		c.fail(ctx, id, gone(err))
 		return
 	}
 	// If the list does not fit into one frame, report the change set as incomplete. The client then reloads the
@@ -499,7 +510,7 @@ func (c *connection) commit(ctx context.Context, id uint64, req *pb.Commit) {
 		TTL:         c.s.opts.LeaseTTL,
 	})
 	if err != nil {
-		c.fail(ctx, id, err)
+		c.fail(ctx, id, gone(err))
 		return
 	}
 	// The store extended the lease in the commit transaction.
@@ -572,6 +583,62 @@ func (c *connection) deleteDB(ctx context.Context, id uint64, req *pb.Delete) {
 		c.log.Info("database deleted", "db", req.GetDbId(), "revoked", res.Revoked)
 	}
 	c.send(ctx, &pb.ServerFrame{RequestId: id, Body: &pb.ServerFrame_Ok{Ok: &pb.Ok{}}})
+}
+
+// claimSlot passes the owner's slot to the key of this connection. See pb.ClaimSlot.
+func (c *connection) claimSlot(ctx context.Context, id uint64) {
+	if c.owner == "" {
+		c.fail(ctx, id, store.BadRequest("slots need access tokens with a sub claim"))
+		return
+	}
+	res, err := c.s.opts.Store.ClaimSlot(ctx, store.ClaimRequest{
+		Owner: c.owner, Subject: c.subject, Label: c.label, Now: c.s.opts.Now(),
+	})
+	if err != nil {
+		c.fail(ctx, id, err)
+		return
+	}
+	for _, key := range res.Deleted {
+		c.s.holders.purge(key)
+	}
+	slot := &pb.Slot{Label: res.Slot.Label, ClaimedAtMs: uint64(res.Slot.ClaimedAt.UnixMilli())}
+	if res.Replaced != nil {
+		slot.ReplacedLabel = res.Replaced.Label
+		c.log.Info("slot claimed from another key", "label", res.Slot.Label,
+			"replaced_label", res.Replaced.Label, "deleted_databases", len(res.Deleted))
+	}
+	c.send(ctx, &pb.ServerFrame{RequestId: id, Body: &pb.ServerFrame_Slot{Slot: slot}})
+}
+
+// deleteSlot releases the owner's slot and deletes all databases of the key of this connection. See pb.DeleteSlot.
+func (c *connection) deleteSlot(ctx context.Context, id uint64) {
+	if c.owner == "" {
+		c.fail(ctx, id, store.BadRequest("slots need access tokens with a sub claim"))
+		return
+	}
+	if len(c.dbs) > 0 {
+		c.fail(ctx, id, store.BadRequest("databases are open on this connection; close them first"))
+		return
+	}
+	deleted, err := c.s.opts.Store.DeleteSlot(ctx, c.owner, c.subject)
+	if err != nil {
+		c.fail(ctx, id, err)
+		return
+	}
+	for _, key := range deleted {
+		c.s.holders.purge(key)
+	}
+	c.log.Info("slot deleted", "deleted_databases", len(deleted))
+	c.send(ctx, &pb.ServerFrame{RequestId: id, Body: &pb.ServerFrame_Ok{Ok: &pb.Ok{}}})
+}
+
+// gone turns ErrNotFound for a database that is open on this connection into ErrFenced: it was deleted while open,
+// possibly through a server instance that could not push LeaseRevoked, and its lease ended with it.
+func gone(err error) error {
+	if errors.Is(err, store.ErrNotFound) {
+		return fmt.Errorf("%w: the database was deleted", store.ErrFenced)
+	}
+	return err
 }
 
 func (c *connection) openDB(dbID string) (*openDB, error) {

@@ -30,6 +30,25 @@ Status: works and is tested, not yet in production use. Versions are 0.x: the pr
   pings until then, so the client's leases stay renewed. The JWKS is fetched again after its `max-age`, at most five
   minutes, and when a token names an unknown key ID, at most once a minute. If fetching fails, the keys fetched
   before stay in use for up to an hour.
+- **Slots (optional, with access tokens).** A slot ties the token's owner (`sub`) to one key: every owner has at
+  most one slot, and once it has one, only the key that holds it opens databases. Others get
+  `ERROR_CODE_SLOT_TAKEN`. A slot carries a label from a token claim (`TOKEN_SLOT_LABEL_CLAIM`), e.g. the ID of the
+  device that holds it.
+  - `ClaimSlot` (WebSocket, after login) passes the slot to the client's key. If another key held it, the server
+    deletes all databases of that key completely, without the record that a normal deletion keeps, and sends
+    `LeaseRevoked` to clients that have them open. The answer names the replaced label.
+  - `DeleteSlot` (WebSocket, only by the key that holds the slot, with no database open on the connection) releases
+    the slot and deletes all databases of the key completely.
+  - `GET /v1/slot` with `Authorization: Bearer <token>` returns `{"slot":{"label":"…","claimedAtMs":…}}`, or
+    `{"slot":null}`. The token need not be bound to a key, so a client can ask before it has its key. Browsers may
+    call it from the same origins as the WebSocket.
+  - Deleting unused databases also releases the slot of their key. A slot without databases is released after the
+    same time.
+  - Deleting through a slot leaves no record. A client should not use the key of a replaced or deleted slot again:
+    its caches of the old databases would be ahead of the new, empty ones, and opening would fail.
+
+  With slots, the server stores which subject belongs to which owner; the contents stay encrypted. Without a slot,
+  every key opens its own databases as before.
 - **Change log.** For the last 1024 commits the server keeps the indexes of the blocks each commit changed. A client
   whose local copy is a few commits behind discards only those blocks instead of the whole copy.
 - **Deletion.** A client can delete a database it does not have open. The server removes the blocks and the change
@@ -60,6 +79,7 @@ The server listens on one port and serves:
 | Path | Purpose |
 |---|---|
 | `/v1/ws` | the WebSocket endpoint for clients |
+| `/v1/slot` | the owner's slot, with access tokens, see [Features](#features) |
 | `/.well-known/live` | liveness probe, always 200 |
 | `/.well-known/ready` | readiness probe, 200 if the store answers within one second |
 
@@ -97,6 +117,7 @@ it, so clients should use a separate login key for each server.
 | `SQLITE_REMOTE_TOKEN_ISSUER` | with a JWKS | | required `iss` claim |
 | `SQLITE_REMOTE_TOKEN_AUDIENCE` | no | `SQLITE_REMOTE_SERVER_ID` | required `aud` claim |
 | `SQLITE_REMOTE_TOKEN_LEEWAY` | no | `1m` | allowance for clock differences when checking `exp` and `nbf` |
+| `SQLITE_REMOTE_TOKEN_SLOT_LABEL_CLAIM` | no | | token claim whose string value labels a slot, see [Features](#features). Empty: slots have no label |
 | `SQLITE_REMOTE_DELETE_UNUSED_AFTER_DAYS` | no | `180` | days without use after which a database is deleted, see [Features](#features). `0` turns this off |
 
 ### Embedding
@@ -171,7 +192,7 @@ this server.
 | `cmd/sqlite-remote-server` | the command: reads the environment and calls `server.Run` |
 | `server` | `Config`, `Validate` and `Run`, the public API |
 | `config` | the environment variables of the command. `LoadFrom` reads them through a function, for programs that receive the settings under other names |
-| `internal/protocol` | WebSocket, login, leases, commits, fetches, change log |
+| `internal/protocol` | WebSocket, login, leases, commits, fetches, change log, slots |
 | `internal/store` | the store interface. `memory` and `postgres` implement it, `storetest` checks both against the same contract |
 | `internal/platform` | logging, probes, panic recovery, graceful shutdown |
 | `migrations` | PostgreSQL migrations, embedded in the binary |

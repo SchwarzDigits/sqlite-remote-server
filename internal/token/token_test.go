@@ -106,14 +106,62 @@ func quiet() *slog.Logger {
 
 func fileVerifier(t *testing.T, s *service, now *time.Time) *Verifier {
 	t.Helper()
+	return labelVerifier(t, s, now, "")
+}
+
+func labelVerifier(t *testing.T, s *service, now *time.Time, labelClaim string) *Verifier {
+	t.Helper()
 	path := filepath.Join(t.TempDir(), "jwks.json")
 	require.NoError(t, os.WriteFile(path, s.jwks(), 0o600))
 	v, err := New(Config{
-		JWKSFile: path, Issuer: issuer, Audience: audience, Leeway: time.Minute,
+		JWKSFile: path, Issuer: issuer, Audience: audience, Leeway: time.Minute, LabelClaim: labelClaim,
 		Now: func() time.Time { return *now },
 	}, quiet())
 	require.NoError(t, err)
 	return v
+}
+
+func TestLabelComesFromTheConfiguredClaim(t *testing.T) {
+	s := newService(t, "k1")
+	now := t0.Add(time.Minute)
+	v := labelVerifier(t, s, &now, "device")
+	client := clientKey(t)
+
+	withDevice := claimsFor(client, func(c jwt.MapClaims) { c["device"] = "c0ffee" })
+	grant, err := v.Verify(context.Background(), s.sign(jwt.SigningMethodEdDSA, "k1", withDevice), client)
+	require.NoError(t, err)
+	require.Equal(t, "c0ffee", grant.Label)
+
+	grant, err = v.Verify(context.Background(), s.sign(jwt.SigningMethodEdDSA, "k1", claimsFor(client, nil)), client)
+	require.NoError(t, err)
+	require.Empty(t, grant.Label, "without the claim")
+
+	notString := claimsFor(client, func(c jwt.MapClaims) { c["device"] = 7 })
+	grant, err = v.Verify(context.Background(), s.sign(jwt.SigningMethodEdDSA, "k1", notString), client)
+	require.NoError(t, err)
+	require.Empty(t, grant.Label, "a claim that is not a string gives no label")
+}
+
+func TestUnboundTokensAreAcceptedOnlyWithoutKeyCheck(t *testing.T) {
+	s := newService(t, "k1")
+	now := t0.Add(time.Minute)
+	v := fileVerifier(t, s, &now)
+	client := clientKey(t)
+
+	unbound := s.sign(jwt.SigningMethodEdDSA, "k1", claimsFor(client, func(c jwt.MapClaims) { delete(c, "cnf") }))
+	grant, err := v.VerifyUnbound(context.Background(), unbound)
+	require.NoError(t, err)
+	require.Equal(t, "0b4c3e2a-5d1f-4c1a-9e3b-7a2d1f0e9c8b@example.test", grant.Owner)
+	_, err = v.Verify(context.Background(), unbound, client)
+	requireDenied(t, err, "a login needs a bound token")
+
+	_, err = v.VerifyUnbound(context.Background(), s.sign(jwt.SigningMethodEdDSA, "k1", claimsFor(client, nil)))
+	require.NoError(t, err, "a bound token is accepted too")
+	wrongAudience := claimsFor(client, func(c jwt.MapClaims) { c["aud"] = "other" })
+	_, err = v.VerifyUnbound(context.Background(), s.sign(jwt.SigningMethodEdDSA, "k1", wrongAudience))
+	requireDenied(t, err, "the audience is still checked")
+	_, err = v.VerifyUnbound(context.Background(), "")
+	requireDenied(t, err)
 }
 
 func requireDenied(t *testing.T, err error, msgAndArgs ...any) {
@@ -128,9 +176,11 @@ func TestValidTokensAreAccepted(t *testing.T) {
 	v := fileVerifier(t, s, &now)
 	client := clientKey(t)
 
-	expires, err := v.Verify(context.Background(), s.sign(jwt.SigningMethodEdDSA, "k1", claimsFor(client, nil)), client)
+	grant, err := v.Verify(context.Background(), s.sign(jwt.SigningMethodEdDSA, "k1", claimsFor(client, nil)), client)
 	require.NoError(t, err)
-	require.True(t, t0.Add(time.Hour).Equal(expires), "expiry %s", expires)
+	require.True(t, t0.Add(time.Hour).Equal(grant.Expires), "expiry %s", grant.Expires)
+	require.Equal(t, "0b4c3e2a-5d1f-4c1a-9e3b-7a2d1f0e9c8b@example.test", grant.Owner)
+	require.Empty(t, grant.Label, "no label claim is configured")
 
 	_, err = v.Verify(context.Background(), s.sign(jwt.SigningMethodES256, "k1-ec", claimsFor(client, nil)), client)
 	require.NoError(t, err, "ES256 is accepted too")

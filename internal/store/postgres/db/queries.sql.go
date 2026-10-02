@@ -189,6 +189,16 @@ func (q *Queries) DeleteDatabase(ctx context.Context, arg DeleteDatabaseParams) 
 	return lease_epoch, err
 }
 
+const deleteSlotOf = `-- name: DeleteSlotOf :exec
+DELETE FROM slots
+WHERE owner = $1
+`
+
+func (q *Queries) DeleteSlotOf(ctx context.Context, owner string) error {
+	_, err := q.db.Exec(ctx, deleteSlotOf, owner)
+	return err
+}
+
 const extendLease = `-- name: ExtendLease :execrows
 UPDATE databases
 SET lease_expires = $4
@@ -294,6 +304,23 @@ func (q *Queries) GetDatabase(ctx context.Context, arg GetDatabaseParams) (Datab
 	return i, err
 }
 
+const getSlot = `-- name: GetSlot :one
+SELECT owner, subject, label, claimed_at FROM slots
+WHERE owner = $1
+`
+
+func (q *Queries) GetSlot(ctx context.Context, owner string) (Slot, error) {
+	row := q.db.QueryRow(ctx, getSlot, owner)
+	var i Slot
+	err := row.Scan(
+		&i.Owner,
+		&i.Subject,
+		&i.Label,
+		&i.ClaimedAt,
+	)
+	return i, err
+}
+
 const grantLease = `-- name: GrantLease :one
 UPDATE databases
 SET lease_epoch = lease_epoch + 1,
@@ -328,6 +355,49 @@ func (q *Queries) GrantLease(ctx context.Context, arg GrantLeaseParams) (int64, 
 	return lease_epoch, err
 }
 
+const holdsSlot = `-- name: HoldsSlot :one
+SELECT EXISTS (SELECT 1 FROM slots WHERE subject = $1)
+`
+
+func (q *Queries) HoldsSlot(ctx context.Context, subject string) (bool, error) {
+	row := q.db.QueryRow(ctx, holdsSlot, subject)
+	var exists bool
+	err := row.Scan(&exists)
+	return exists, err
+}
+
+const insertSlot = `-- name: InsertSlot :one
+INSERT INTO slots (owner, subject, label, claimed_at)
+VALUES ($1, $2, $3, $4)
+ON CONFLICT (owner) DO NOTHING
+RETURNING owner, subject, label, claimed_at
+`
+
+type InsertSlotParams struct {
+	Owner     string
+	Subject   string
+	Label     string
+	ClaimedAt pgtype.Timestamptz
+}
+
+// InsertSlot inserts nothing if another transaction inserted the owner's slot first. The caller then locks it.
+func (q *Queries) InsertSlot(ctx context.Context, arg InsertSlotParams) (Slot, error) {
+	row := q.db.QueryRow(ctx, insertSlot,
+		arg.Owner,
+		arg.Subject,
+		arg.Label,
+		arg.ClaimedAt,
+	)
+	var i Slot
+	err := row.Scan(
+		&i.Owner,
+		&i.Subject,
+		&i.Label,
+		&i.ClaimedAt,
+	)
+	return i, err
+}
+
 const lockDatabase = `-- name: LockDatabase :one
 
 SELECT subject, db_id, page_size, page_count, version, last_commit_id, lease_epoch, lease_id, lease_holder, lease_granted, lease_expires, deleted FROM databases
@@ -359,6 +429,26 @@ func (q *Queries) LockDatabase(ctx context.Context, arg LockDatabaseParams) (Dat
 		&i.LeaseGranted,
 		&i.LeaseExpires,
 		&i.Deleted,
+	)
+	return i, err
+}
+
+const lockSlot = `-- name: LockSlot :one
+SELECT owner, subject, label, claimed_at FROM slots
+WHERE owner = $1
+FOR UPDATE
+`
+
+// LockSlot locks an owner's slot. Opening a database and claiming or deleting the slot take this lock before any
+// database row, so they cannot deadlock.
+func (q *Queries) LockSlot(ctx context.Context, owner string) (Slot, error) {
+	row := q.db.QueryRow(ctx, lockSlot, owner)
+	var i Slot
+	err := row.Scan(
+		&i.Owner,
+		&i.Subject,
+		&i.Label,
+		&i.ClaimedAt,
 	)
 	return i, err
 }
@@ -397,6 +487,54 @@ type PruneChangesParams struct {
 func (q *Queries) PruneChanges(ctx context.Context, arg PruneChangesParams) error {
 	_, err := q.db.Exec(ctx, pruneChanges, arg.Subject, arg.DbID, arg.Version)
 	return err
+}
+
+const purgeDatabase = `-- name: PurgeDatabase :exec
+DELETE FROM databases
+WHERE subject = $1 AND db_id = $2
+`
+
+type PurgeDatabaseParams struct {
+	Subject string
+	DbID    string
+}
+
+func (q *Queries) PurgeDatabase(ctx context.Context, arg PurgeDatabaseParams) error {
+	_, err := q.db.Exec(ctx, purgeDatabase, arg.Subject, arg.DbID)
+	return err
+}
+
+const purgeSubject = `-- name: PurgeSubject :many
+DELETE FROM databases
+WHERE subject = $1
+RETURNING db_id, deleted
+`
+
+type PurgeSubjectRow struct {
+	DbID    string
+	Deleted bool
+}
+
+// PurgeSubject deletes all databases of a subject completely, with their blocks and change logs (foreign keys). It
+// returns those that were not deleted before.
+func (q *Queries) PurgeSubject(ctx context.Context, subject string) ([]PurgeSubjectRow, error) {
+	rows, err := q.db.Query(ctx, purgeSubject, subject)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	var items []PurgeSubjectRow
+	for rows.Next() {
+		var i PurgeSubjectRow
+		if err := rows.Scan(&i.DbID, &i.Deleted); err != nil {
+			return nil, err
+		}
+		items = append(items, i)
+	}
+	if err := rows.Err(); err != nil {
+		return nil, err
+	}
+	return items, nil
 }
 
 const recordChange = `-- name: RecordChange :exec
@@ -444,6 +582,18 @@ func (q *Queries) ReleaseLease(ctx context.Context, arg ReleaseLeaseParams) (int
 	return result.RowsAffected(), nil
 }
 
+const releaseUnusedSlots = `-- name: ReleaseUnusedSlots :exec
+DELETE FROM slots s
+WHERE s.claimed_at < $1
+  AND NOT EXISTS (SELECT 1 FROM databases d WHERE d.subject = s.subject AND NOT d.deleted)
+`
+
+// ReleaseUnusedSlots releases the slots that were claimed before the cutoff and whose key has no databases left.
+func (q *Queries) ReleaseUnusedSlots(ctx context.Context, claimedAt pgtype.Timestamptz) error {
+	_, err := q.db.Exec(ctx, releaseUnusedSlots, claimedAt)
+	return err
+}
+
 const reviveDatabase = `-- name: ReviveDatabase :one
 UPDATE databases
 SET deleted = false,
@@ -475,6 +625,25 @@ func (q *Queries) ReviveDatabase(ctx context.Context, arg ReviveDatabaseParams) 
 		&i.LeaseGranted,
 		&i.LeaseExpires,
 		&i.Deleted,
+	)
+	return i, err
+}
+
+const shareSlot = `-- name: ShareSlot :one
+SELECT owner, subject, label, claimed_at FROM slots
+WHERE owner = $1
+FOR SHARE
+`
+
+// ShareSlot locks an owner's slot against a concurrent claim while a database is opened.
+func (q *Queries) ShareSlot(ctx context.Context, owner string) (Slot, error) {
+	row := q.db.QueryRow(ctx, shareSlot, owner)
+	var i Slot
+	err := row.Scan(
+		&i.Owner,
+		&i.Subject,
+		&i.Label,
+		&i.ClaimedAt,
 	)
 	return i, err
 }
@@ -530,4 +699,37 @@ func (q *Queries) UnusedDatabases(ctx context.Context, arg UnusedDatabasesParams
 		return nil, err
 	}
 	return items, nil
+}
+
+const updateSlot = `-- name: UpdateSlot :one
+UPDATE slots
+SET subject = $2,
+    label = $3,
+    claimed_at = $4
+WHERE owner = $1
+RETURNING owner, subject, label, claimed_at
+`
+
+type UpdateSlotParams struct {
+	Owner     string
+	Subject   string
+	Label     string
+	ClaimedAt pgtype.Timestamptz
+}
+
+func (q *Queries) UpdateSlot(ctx context.Context, arg UpdateSlotParams) (Slot, error) {
+	row := q.db.QueryRow(ctx, updateSlot,
+		arg.Owner,
+		arg.Subject,
+		arg.Label,
+		arg.ClaimedAt,
+	)
+	var i Slot
+	err := row.Scan(
+		&i.Owner,
+		&i.Subject,
+		&i.Label,
+		&i.ClaimedAt,
+	)
+	return i, err
 }

@@ -136,3 +136,59 @@ RETURNING *;
 -- synchronously.
 -- name: SyncStandbyNames :one
 SELECT current_setting('synchronous_standby_names')::text;
+
+-- name: GetSlot :one
+SELECT * FROM slots
+WHERE owner = $1;
+
+-- LockSlot locks an owner's slot. Opening a database and claiming or deleting the slot take this lock before any
+-- database row, so they cannot deadlock.
+-- name: LockSlot :one
+SELECT * FROM slots
+WHERE owner = $1
+FOR UPDATE;
+
+-- ShareSlot locks an owner's slot against a concurrent claim while a database is opened.
+-- name: ShareSlot :one
+SELECT * FROM slots
+WHERE owner = $1
+FOR SHARE;
+
+-- InsertSlot inserts nothing if another transaction inserted the owner's slot first. The caller then locks it.
+-- name: InsertSlot :one
+INSERT INTO slots (owner, subject, label, claimed_at)
+VALUES ($1, $2, $3, $4)
+ON CONFLICT (owner) DO NOTHING
+RETURNING *;
+
+-- name: UpdateSlot :one
+UPDATE slots
+SET subject = $2,
+    label = $3,
+    claimed_at = $4
+WHERE owner = $1
+RETURNING *;
+
+-- name: DeleteSlotOf :exec
+DELETE FROM slots
+WHERE owner = $1;
+
+-- PurgeSubject deletes all databases of a subject completely, with their blocks and change logs (foreign keys). It
+-- returns those that were not deleted before.
+-- name: PurgeSubject :many
+DELETE FROM databases
+WHERE subject = $1
+RETURNING db_id, deleted;
+
+-- name: PurgeDatabase :exec
+DELETE FROM databases
+WHERE subject = $1 AND db_id = $2;
+
+-- name: HoldsSlot :one
+SELECT EXISTS (SELECT 1 FROM slots WHERE subject = $1);
+
+-- ReleaseUnusedSlots releases the slots that were claimed before the cutoff and whose key has no databases left.
+-- name: ReleaseUnusedSlots :exec
+DELETE FROM slots s
+WHERE s.claimed_at < $1
+  AND NOT EXISTS (SELECT 1 FROM databases d WHERE d.subject = s.subject AND NOT d.deleted);

@@ -7,6 +7,7 @@ import (
 	"crypto/rand"
 	"maps"
 	"slices"
+	"strings"
 	"sync"
 	"time"
 
@@ -39,19 +40,25 @@ type database struct {
 type Store struct {
 	mu  sync.Mutex
 	dbs map[store.Key]*database
+	// slots maps an owner to its slot.
+	slots map[string]store.Slot
 }
 
 var _ store.Store = (*Store)(nil)
 
 // New returns an empty store.
 func New() *Store {
-	return &Store{dbs: make(map[store.Key]*database)}
+	return &Store{dbs: make(map[store.Key]*database), slots: make(map[string]store.Slot)}
 }
 
 // Open implements store.Store.
 func (s *Store) Open(_ context.Context, req store.OpenRequest) (store.OpenResult, error) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
+
+	if slot, ok := s.slots[req.Owner]; req.Owner != "" && ok && slot.Subject != req.Key.Subject {
+		return store.OpenResult{}, store.ErrSlotTaken
+	}
 
 	db, ok := s.dbs[req.Key]
 	if ok && db.deleted {
@@ -275,10 +282,96 @@ func (s *Store) DeleteUnused(_ context.Context, cutoff time.Time, limit int) ([]
 	if len(unused) > limit {
 		unused = unused[:limit]
 	}
+	holders := s.slotHolders()
 	for _, k := range unused {
-		s.dbs[k].remove()
+		if holders[k.Subject] {
+			delete(s.dbs, k)
+		} else {
+			s.dbs[k].remove()
+		}
+	}
+	for owner, slot := range s.slots {
+		if slot.ClaimedAt.Before(cutoff) && !s.hasDatabases(slot.Subject) {
+			delete(s.slots, owner)
+		}
 	}
 	return unused, nil
+}
+
+// GetSlot implements store.Store.
+func (s *Store) GetSlot(_ context.Context, owner string) (store.Slot, bool, error) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+
+	slot, ok := s.slots[owner]
+	return slot, ok, nil
+}
+
+// ClaimSlot implements store.Store.
+func (s *Store) ClaimSlot(_ context.Context, req store.ClaimRequest) (store.ClaimResult, error) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+
+	slot := store.Slot{Subject: req.Subject, Label: req.Label, ClaimedAt: req.Now}
+	var result store.ClaimResult
+	if old, ok := s.slots[req.Owner]; ok && old.Subject == req.Subject {
+		slot.ClaimedAt = old.ClaimedAt
+	} else if ok {
+		result.Replaced = &old
+		result.Deleted = s.purge(old.Subject)
+	}
+	s.slots[req.Owner] = slot
+	result.Slot = slot
+	return result, nil
+}
+
+// DeleteSlot implements store.Store.
+func (s *Store) DeleteSlot(_ context.Context, owner, subject string) ([]store.Key, error) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+
+	if slot, ok := s.slots[owner]; ok {
+		if slot.Subject != subject {
+			return nil, store.ErrSlotTaken
+		}
+		delete(s.slots, owner)
+	}
+	return s.purge(subject), nil
+}
+
+// purge deletes all databases of subject completely and returns those that were not deleted before, sorted.
+func (s *Store) purge(subject string) []store.Key {
+	var deleted []store.Key
+	for k, db := range s.dbs {
+		if k.Subject != subject {
+			continue
+		}
+		if !db.deleted {
+			deleted = append(deleted, k)
+		}
+		delete(s.dbs, k)
+	}
+	slices.SortFunc(deleted, func(a, b store.Key) int { return strings.Compare(a.DBID, b.DBID) })
+	return deleted
+}
+
+// slotHolders returns the subjects that hold a slot.
+func (s *Store) slotHolders() map[string]bool {
+	holders := make(map[string]bool, len(s.slots))
+	for _, slot := range s.slots {
+		holders[slot.Subject] = true
+	}
+	return holders
+}
+
+// hasDatabases reports whether subject has a database that is not deleted.
+func (s *Store) hasDatabases(subject string) bool {
+	for k, db := range s.dbs {
+		if k.Subject == subject && !db.deleted {
+			return true
+		}
+	}
+	return false
 }
 
 // remove deletes the database's content and fences every lease. The record stays, so that epoch and version continue

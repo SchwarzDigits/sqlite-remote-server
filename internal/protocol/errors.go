@@ -38,6 +38,8 @@ func errorFrame(requestID uint64, err error, log *slog.Logger) *pb.ServerFrame {
 		e.Code = pb.ErrorCode_ERROR_CODE_NOT_FOUND
 	case errors.Is(err, store.ErrFenced):
 		e.Code = pb.ErrorCode_ERROR_CODE_FENCED
+	case errors.Is(err, store.ErrSlotTaken):
+		e.Code = pb.ErrorCode_ERROR_CODE_SLOT_TAKEN
 	case errors.Is(err, errTooLarge):
 		e.Code = pb.ErrorCode_ERROR_CODE_TOO_LARGE
 	case errors.As(err, &held):
