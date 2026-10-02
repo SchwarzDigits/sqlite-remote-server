@@ -32,11 +32,13 @@ Status: works and is tested, not yet in production use. Versions are 0.x: the pr
   before stay in use for up to an hour.
 - **Slots (optional, with access tokens).** A slot ties the token's owner (`sub`) to one key: every owner has at
   most one slot, and once it has one, only the key that holds it opens databases. Others get
-  `ERROR_CODE_SLOT_TAKEN`. A slot carries a label from a token claim (`TOKEN_SLOT_LABEL_CLAIM`), e.g. the ID of the
-  device that holds it.
-  - `ClaimSlot` (WebSocket, after login) passes the slot to the client's key. If another key held it, the server
-    deletes all databases of that key completely, without the record that a normal deletion keeps, and sends
-    `LeaseRevoked` to clients that have them open. The answer names the replaced label.
+  `ERROR_CODE_SLOT_TAKEN`. A slot carries a label, e.g. the ID of the device that holds it.
+  - `ClaimSlot` (WebSocket, after login) passes the slot to the client's key, with an empty label. If another key
+    held it, the server deletes all databases of that key completely, without the record that a normal deletion
+    keeps, and sends `LeaseRevoked` to clients that have them open. The answer names the replaced label. Claiming a
+    slot the key already holds changes nothing.
+  - `SetSlotLabel` (WebSocket, only by the key that holds the slot) sets the label, at most 256 bytes. It never
+    passes or deletes anything.
   - `DeleteSlot` (WebSocket, only by the key that holds the slot, with no database open on the connection) releases
     the slot and deletes all databases of the key completely.
   - `GET /v1/slot` with `Authorization: Bearer <token>` returns `{"slot":{"label":"…","claimedAtMs":…}}`, or
@@ -117,7 +119,6 @@ it, so clients should use a separate login key for each server.
 | `SQLITE_REMOTE_TOKEN_ISSUER` | with a JWKS | | required `iss` claim |
 | `SQLITE_REMOTE_TOKEN_AUDIENCE` | no | `SQLITE_REMOTE_SERVER_ID` | required `aud` claim |
 | `SQLITE_REMOTE_TOKEN_LEEWAY` | no | `1m` | allowance for clock differences when checking `exp` and `nbf` |
-| `SQLITE_REMOTE_TOKEN_SLOT_LABEL_CLAIM` | no | | token claim whose string value labels a slot, see [Features](#features). Empty: slots have no label |
 | `SQLITE_REMOTE_DELETE_UNUSED_AFTER_DAYS` | no | `180` | days without use after which a database is deleted, see [Features](#features). `0` turns this off |
 
 ### Embedding

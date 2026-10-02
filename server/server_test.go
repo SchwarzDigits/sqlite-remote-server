@@ -59,7 +59,6 @@ func TestValidateNamesTheField(t *testing.T) {
 			c.TokenJWKSURL, c.TokenIssuer = "http://tokens.test/jwks", "https://tokens.test"
 		}},
 		{"TokenLeeway", func(c *server.Config) { c.TokenLeeway = -time.Second }},
-		{"TokenSlotLabelClaim", func(c *server.Config) { c.TokenSlotLabelClaim = "client_id" }},
 	} {
 		t.Run(tc.field, func(t *testing.T) {
 			cfg := valid()

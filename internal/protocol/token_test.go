@@ -22,10 +22,7 @@ import (
 	"github.com/SchwarzDigits/sqlite-remote-server/internal/token"
 )
 
-const (
-	tokenIssuer    = "https://tokens.test"
-	testLabelClaim = "device"
-)
+const tokenIssuer = "https://tokens.test"
 
 // issuer is a token service for the tests.
 type issuer struct {
@@ -47,7 +44,6 @@ func withTokens(t *testing.T) (*issuer, func(*protocol.Options)) {
 	return &issuer{t: t, key: private}, func(o *protocol.Options) {
 		verifier, err := token.New(token.Config{
 			JWKSFile: path, Issuer: tokenIssuer, Audience: testServerID, Leeway: time.Minute, Now: o.Now,
-			LabelClaim: testLabelClaim,
 		}, slog.New(slog.NewTextHandler(io.Discard, nil)))
 		require.NoError(t, err)
 		o.Tokens = verifier

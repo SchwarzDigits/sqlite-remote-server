@@ -27,7 +27,7 @@ import (
 // Paths served on Config.Addr.
 const (
 	PathWebSocket = protocol.Path
-	// PathSlot returns the slot of a token's owner, see TokenSlotLabelClaim. It needs access tokens.
+	// PathSlot returns the slot of a token's owner. It needs access tokens.
 	PathSlot  = protocol.SlotPath
 	PathLive  = platform.PathLive
 	PathReady = platform.PathReady
@@ -107,13 +107,6 @@ type Config struct {
 	// TokenLeeway allows for clock differences between the token service and this server when checking exp and
 	// nbf. A connection whose token expired more than TokenLeeway ago is closed at the next request.
 	TokenLeeway time.Duration
-	// TokenSlotLabelClaim names the token claim whose value labels the owner's slot, e.g. the id of the device that
-	// holds it. Empty means slots have no label.
-	//
-	// Every owner (the token's sub) has at most one slot, held by one key. Once the owner has a slot, only that key
-	// opens databases; ClaimSlot passes the slot to another key and deletes the databases of the previous one.
-	// GET PathSlot tells a client the label of the owner's slot before it has its key.
-	TokenSlotLabelClaim string
 }
 
 // DefaultConfig returns the default limits and timeouts. Addr, ServerID and Store are left to the caller.
@@ -179,8 +172,6 @@ func (c Config) Validate() error {
 		return invalid("TokenJWKSFile", "must not be set together with TokenJWKSURL")
 	case !c.tokens() && (c.TokenIssuer != "" || c.TokenAudience != ""):
 		return invalid("TokenIssuer", "needs TokenJWKSURL or TokenJWKSFile, otherwise no token is checked")
-	case !c.tokens() && c.TokenSlotLabelClaim != "":
-		return invalid("TokenSlotLabelClaim", "needs TokenJWKSURL or TokenJWKSFile: slots belong to the owners of tokens")
 	case c.tokens() && c.TokenIssuer == "":
 		return invalid("TokenIssuer", "is required with access tokens")
 	case c.TokenLeeway < 0:
@@ -267,18 +258,17 @@ func newVerifier(cfg Config, log *slog.Logger) (*token.Verifier, error) {
 		audience = cfg.ServerID
 	}
 	verifier, err := token.New(token.Config{
-		JWKSURL:    cfg.TokenJWKSURL,
-		JWKSFile:   cfg.TokenJWKSFile,
-		Issuer:     cfg.TokenIssuer,
-		Audience:   audience,
-		Leeway:     cfg.TokenLeeway,
-		LabelClaim: cfg.TokenSlotLabelClaim,
+		JWKSURL:  cfg.TokenJWKSURL,
+		JWKSFile: cfg.TokenJWKSFile,
+		Issuer:   cfg.TokenIssuer,
+		Audience: audience,
+		Leeway:   cfg.TokenLeeway,
 	}, log)
 	if err != nil {
 		return nil, invalid("TokenJWKSFile", "%v", err)
 	}
 	log.Info("access tokens required", "issuer", cfg.TokenIssuer, "audience", audience,
-		"jwks", cfg.TokenJWKSURL+cfg.TokenJWKSFile, "slot_label_claim", cfg.TokenSlotLabelClaim)
+		"jwks", cfg.TokenJWKSURL+cfg.TokenJWKSFile)
 	return verifier, nil
 }
 

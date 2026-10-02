@@ -190,6 +190,7 @@ type ClientFrame struct {
 	//	*ClientFrame_Changed
 	//	*ClientFrame_ClaimSlot
 	//	*ClientFrame_DeleteSlot
+	//	*ClientFrame_SetSlotLabel
 	Body          isClientFrame_Body `protobuf_oneof:"body"`
 	unknownFields protoimpl.UnknownFields
 	sizeCache     protoimpl.SizeCache
@@ -338,6 +339,15 @@ func (x *ClientFrame) GetDeleteSlot() *DeleteSlot {
 	return nil
 }
 
+func (x *ClientFrame) GetSetSlotLabel() *SetSlotLabel {
+	if x != nil {
+		if x, ok := x.Body.(*ClientFrame_SetSlotLabel); ok {
+			return x.SetSlotLabel
+		}
+	}
+	return nil
+}
+
 type isClientFrame_Body interface {
 	isClientFrame_Body()
 }
@@ -386,6 +396,10 @@ type ClientFrame_DeleteSlot struct {
 	DeleteSlot *DeleteSlot `protobuf:"bytes,21,opt,name=delete_slot,json=deleteSlot,proto3,oneof"`
 }
 
+type ClientFrame_SetSlotLabel struct {
+	SetSlotLabel *SetSlotLabel `protobuf:"bytes,22,opt,name=set_slot_label,json=setSlotLabel,proto3,oneof"`
+}
+
 func (*ClientFrame_Hello) isClientFrame_Body() {}
 
 func (*ClientFrame_Open) isClientFrame_Body() {}
@@ -407,6 +421,8 @@ func (*ClientFrame_Changed) isClientFrame_Body() {}
 func (*ClientFrame_ClaimSlot) isClientFrame_Body() {}
 
 func (*ClientFrame_DeleteSlot) isClientFrame_Body() {}
+
+func (*ClientFrame_SetSlotLabel) isClientFrame_Body() {}
 
 // A frame from the server to the client.
 type ServerFrame struct {
@@ -1858,16 +1874,14 @@ func (x *Delete) GetTakeover() bool {
 
 // Makes the key of this connection the holder of its owner's slot. Answered with `Slot`.
 //
-// Slots need access tokens: the owner is the token's `sub`. An owner has one slot. The slot's label is taken from a
-// token claim that the server names in its configuration, e.g. the id of the client's device; without that claim the
-// label is empty. While the slot is held, opening a database with another key of the same owner fails with
-// ERROR_CODE_SLOT_TAKEN, also when resuming a lease.
+// Slots need access tokens: the owner is the token's `sub`. An owner has one slot. While the slot is held, opening a
+// database with another key of the same owner fails with ERROR_CODE_SLOT_TAKEN, also when resuming a lease.
 //
-// If another key holds the slot, the slot passes to this key, and all databases of the other key are deleted
-// completely, without the record that `Delete` keeps. Instances that have them open receive `LeaseRevoked` if they
-// are connected to the same server instance; in any case their next request on them fails with ERROR_CODE_FENCED.
-// Claiming a slot that this key already holds succeeds and updates the label. A server without access tokens answers
-// with ERROR_CODE_BAD_REQUEST.
+// If another key holds the slot, the slot passes to this key with an empty label, and all databases of the other key
+// are deleted completely, without the record that `Delete` keeps. Instances that have them open receive
+// `LeaseRevoked` if they are connected to the same server instance; in any case their next request on them fails
+// with ERROR_CODE_FENCED. Claiming a slot that this key already holds changes nothing. A server without access tokens
+// answers with ERROR_CODE_BAD_REQUEST.
 type ClaimSlot struct {
 	state         protoimpl.MessageState `protogen:"open.v1"`
 	unknownFields protoimpl.UnknownFields
@@ -1904,6 +1918,54 @@ func (*ClaimSlot) Descriptor() ([]byte, []int) {
 	return file_sqlite_remote_v1_sqlite_remote_proto_rawDescGZIP(), []int{19}
 }
 
+// Sets the label of the owner's slot, e.g. the id of the device that holds it. Only the key that holds the slot can
+// set it: for another key the request fails with ERROR_CODE_SLOT_TAKEN, without a slot with ERROR_CODE_NOT_FOUND. It
+// never passes or deletes anything. Answered with `Slot`.
+type SetSlotLabel struct {
+	state protoimpl.MessageState `protogen:"open.v1"`
+	// At most 256 bytes. Empty clears the label.
+	Label         string `protobuf:"bytes,1,opt,name=label,proto3" json:"label,omitempty"`
+	unknownFields protoimpl.UnknownFields
+	sizeCache     protoimpl.SizeCache
+}
+
+func (x *SetSlotLabel) Reset() {
+	*x = SetSlotLabel{}
+	mi := &file_sqlite_remote_v1_sqlite_remote_proto_msgTypes[20]
+	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+	ms.StoreMessageInfo(mi)
+}
+
+func (x *SetSlotLabel) String() string {
+	return protoimpl.X.MessageStringOf(x)
+}
+
+func (*SetSlotLabel) ProtoMessage() {}
+
+func (x *SetSlotLabel) ProtoReflect() protoreflect.Message {
+	mi := &file_sqlite_remote_v1_sqlite_remote_proto_msgTypes[20]
+	if x != nil {
+		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+		if ms.LoadMessageInfo() == nil {
+			ms.StoreMessageInfo(mi)
+		}
+		return ms
+	}
+	return mi.MessageOf(x)
+}
+
+// Deprecated: Use SetSlotLabel.ProtoReflect.Descriptor instead.
+func (*SetSlotLabel) Descriptor() ([]byte, []int) {
+	return file_sqlite_remote_v1_sqlite_remote_proto_rawDescGZIP(), []int{20}
+}
+
+func (x *SetSlotLabel) GetLabel() string {
+	if x != nil {
+		return x.Label
+	}
+	return ""
+}
+
 // Releases the owner's slot and deletes all databases of the key of this connection completely, without the record
 // that `Delete` keeps. Answered with `Ok`, also if the owner has no slot. If another key holds the slot, nothing is
 // deleted and the request fails with ERROR_CODE_SLOT_TAKEN. No database may be open on this connection.
@@ -1915,7 +1977,7 @@ type DeleteSlot struct {
 
 func (x *DeleteSlot) Reset() {
 	*x = DeleteSlot{}
-	mi := &file_sqlite_remote_v1_sqlite_remote_proto_msgTypes[20]
+	mi := &file_sqlite_remote_v1_sqlite_remote_proto_msgTypes[21]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -1927,7 +1989,7 @@ func (x *DeleteSlot) String() string {
 func (*DeleteSlot) ProtoMessage() {}
 
 func (x *DeleteSlot) ProtoReflect() protoreflect.Message {
-	mi := &file_sqlite_remote_v1_sqlite_remote_proto_msgTypes[20]
+	mi := &file_sqlite_remote_v1_sqlite_remote_proto_msgTypes[21]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -1940,10 +2002,10 @@ func (x *DeleteSlot) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use DeleteSlot.ProtoReflect.Descriptor instead.
 func (*DeleteSlot) Descriptor() ([]byte, []int) {
-	return file_sqlite_remote_v1_sqlite_remote_proto_rawDescGZIP(), []int{20}
+	return file_sqlite_remote_v1_sqlite_remote_proto_rawDescGZIP(), []int{21}
 }
 
-// The owner's slot, in answer to `ClaimSlot`.
+// The owner's slot, in answer to `ClaimSlot` and `SetSlotLabel`.
 type Slot struct {
 	state protoimpl.MessageState `protogen:"open.v1"`
 	Label string                 `protobuf:"bytes,1,opt,name=label,proto3" json:"label,omitempty"`
@@ -1958,7 +2020,7 @@ type Slot struct {
 
 func (x *Slot) Reset() {
 	*x = Slot{}
-	mi := &file_sqlite_remote_v1_sqlite_remote_proto_msgTypes[21]
+	mi := &file_sqlite_remote_v1_sqlite_remote_proto_msgTypes[22]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -1970,7 +2032,7 @@ func (x *Slot) String() string {
 func (*Slot) ProtoMessage() {}
 
 func (x *Slot) ProtoReflect() protoreflect.Message {
-	mi := &file_sqlite_remote_v1_sqlite_remote_proto_msgTypes[21]
+	mi := &file_sqlite_remote_v1_sqlite_remote_proto_msgTypes[22]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -1983,7 +2045,7 @@ func (x *Slot) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use Slot.ProtoReflect.Descriptor instead.
 func (*Slot) Descriptor() ([]byte, []int) {
-	return file_sqlite_remote_v1_sqlite_remote_proto_rawDescGZIP(), []int{21}
+	return file_sqlite_remote_v1_sqlite_remote_proto_rawDescGZIP(), []int{22}
 }
 
 func (x *Slot) GetLabel() string {
@@ -2019,7 +2081,7 @@ type Ping struct {
 
 func (x *Ping) Reset() {
 	*x = Ping{}
-	mi := &file_sqlite_remote_v1_sqlite_remote_proto_msgTypes[22]
+	mi := &file_sqlite_remote_v1_sqlite_remote_proto_msgTypes[23]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -2031,7 +2093,7 @@ func (x *Ping) String() string {
 func (*Ping) ProtoMessage() {}
 
 func (x *Ping) ProtoReflect() protoreflect.Message {
-	mi := &file_sqlite_remote_v1_sqlite_remote_proto_msgTypes[22]
+	mi := &file_sqlite_remote_v1_sqlite_remote_proto_msgTypes[23]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -2044,7 +2106,7 @@ func (x *Ping) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use Ping.ProtoReflect.Descriptor instead.
 func (*Ping) Descriptor() ([]byte, []int) {
-	return file_sqlite_remote_v1_sqlite_remote_proto_rawDescGZIP(), []int{22}
+	return file_sqlite_remote_v1_sqlite_remote_proto_rawDescGZIP(), []int{23}
 }
 
 func (x *Ping) GetClientTimeMs() uint64 {
@@ -2064,7 +2126,7 @@ type Pong struct {
 
 func (x *Pong) Reset() {
 	*x = Pong{}
-	mi := &file_sqlite_remote_v1_sqlite_remote_proto_msgTypes[23]
+	mi := &file_sqlite_remote_v1_sqlite_remote_proto_msgTypes[24]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -2076,7 +2138,7 @@ func (x *Pong) String() string {
 func (*Pong) ProtoMessage() {}
 
 func (x *Pong) ProtoReflect() protoreflect.Message {
-	mi := &file_sqlite_remote_v1_sqlite_remote_proto_msgTypes[23]
+	mi := &file_sqlite_remote_v1_sqlite_remote_proto_msgTypes[24]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -2089,7 +2151,7 @@ func (x *Pong) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use Pong.ProtoReflect.Descriptor instead.
 func (*Pong) Descriptor() ([]byte, []int) {
-	return file_sqlite_remote_v1_sqlite_remote_proto_rawDescGZIP(), []int{23}
+	return file_sqlite_remote_v1_sqlite_remote_proto_rawDescGZIP(), []int{24}
 }
 
 func (x *Pong) GetClientTimeMs() uint64 {
@@ -2108,7 +2170,7 @@ type Ok struct {
 
 func (x *Ok) Reset() {
 	*x = Ok{}
-	mi := &file_sqlite_remote_v1_sqlite_remote_proto_msgTypes[24]
+	mi := &file_sqlite_remote_v1_sqlite_remote_proto_msgTypes[25]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -2120,7 +2182,7 @@ func (x *Ok) String() string {
 func (*Ok) ProtoMessage() {}
 
 func (x *Ok) ProtoReflect() protoreflect.Message {
-	mi := &file_sqlite_remote_v1_sqlite_remote_proto_msgTypes[24]
+	mi := &file_sqlite_remote_v1_sqlite_remote_proto_msgTypes[25]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -2133,7 +2195,7 @@ func (x *Ok) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use Ok.ProtoReflect.Descriptor instead.
 func (*Ok) Descriptor() ([]byte, []int) {
-	return file_sqlite_remote_v1_sqlite_remote_proto_rawDescGZIP(), []int{24}
+	return file_sqlite_remote_v1_sqlite_remote_proto_rawDescGZIP(), []int{25}
 }
 
 // Sent unprompted (request_id 0) when another instance has acquired the lease of a database open on this
@@ -2148,7 +2210,7 @@ type LeaseRevoked struct {
 
 func (x *LeaseRevoked) Reset() {
 	*x = LeaseRevoked{}
-	mi := &file_sqlite_remote_v1_sqlite_remote_proto_msgTypes[25]
+	mi := &file_sqlite_remote_v1_sqlite_remote_proto_msgTypes[26]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -2160,7 +2222,7 @@ func (x *LeaseRevoked) String() string {
 func (*LeaseRevoked) ProtoMessage() {}
 
 func (x *LeaseRevoked) ProtoReflect() protoreflect.Message {
-	mi := &file_sqlite_remote_v1_sqlite_remote_proto_msgTypes[25]
+	mi := &file_sqlite_remote_v1_sqlite_remote_proto_msgTypes[26]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -2173,7 +2235,7 @@ func (x *LeaseRevoked) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use LeaseRevoked.ProtoReflect.Descriptor instead.
 func (*LeaseRevoked) Descriptor() ([]byte, []int) {
-	return file_sqlite_remote_v1_sqlite_remote_proto_rawDescGZIP(), []int{25}
+	return file_sqlite_remote_v1_sqlite_remote_proto_rawDescGZIP(), []int{26}
 }
 
 func (x *LeaseRevoked) GetDbId() string {
@@ -2206,7 +2268,7 @@ type Error struct {
 
 func (x *Error) Reset() {
 	*x = Error{}
-	mi := &file_sqlite_remote_v1_sqlite_remote_proto_msgTypes[26]
+	mi := &file_sqlite_remote_v1_sqlite_remote_proto_msgTypes[27]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -2218,7 +2280,7 @@ func (x *Error) String() string {
 func (*Error) ProtoMessage() {}
 
 func (x *Error) ProtoReflect() protoreflect.Message {
-	mi := &file_sqlite_remote_v1_sqlite_remote_proto_msgTypes[26]
+	mi := &file_sqlite_remote_v1_sqlite_remote_proto_msgTypes[27]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -2231,7 +2293,7 @@ func (x *Error) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use Error.ProtoReflect.Descriptor instead.
 func (*Error) Descriptor() ([]byte, []int) {
-	return file_sqlite_remote_v1_sqlite_remote_proto_rawDescGZIP(), []int{26}
+	return file_sqlite_remote_v1_sqlite_remote_proto_rawDescGZIP(), []int{27}
 }
 
 func (x *Error) GetCode() ErrorCode {
@@ -2266,7 +2328,7 @@ var File_sqlite_remote_v1_sqlite_remote_proto protoreflect.FileDescriptor
 
 const file_sqlite_remote_v1_sqlite_remote_proto_rawDesc = "" +
 	"\n" +
-	"$sqlite_remote/v1/sqlite_remote.proto\x12\x10sqlite_remote.v1\"\xf9\x04\n" +
+	"$sqlite_remote/v1/sqlite_remote.proto\x12\x10sqlite_remote.v1\"\xc1\x05\n" +
 	"\vClientFrame\x12\x1d\n" +
 	"\n" +
 	"request_id\x18\x01 \x01(\x04R\trequestId\x12/\n" +
@@ -2283,7 +2345,8 @@ const file_sqlite_remote_v1_sqlite_remote_proto_rawDesc = "" +
 	"\n" +
 	"claim_slot\x18\x14 \x01(\v2\x1b.sqlite_remote.v1.ClaimSlotH\x00R\tclaimSlot\x12?\n" +
 	"\vdelete_slot\x18\x15 \x01(\v2\x1c.sqlite_remote.v1.DeleteSlotH\x00R\n" +
-	"deleteSlotB\x06\n" +
+	"deleteSlot\x12F\n" +
+	"\x0eset_slot_label\x18\x16 \x01(\v2\x1e.sqlite_remote.v1.SetSlotLabelH\x00R\fsetSlotLabelB\x06\n" +
 	"\x04body\"\xff\x04\n" +
 	"\vServerFrame\x12\x1d\n" +
 	"\n" +
@@ -2393,7 +2456,9 @@ const file_sqlite_remote_v1_sqlite_remote_proto_rawDesc = "" +
 	"\x06Delete\x12\x13\n" +
 	"\x05db_id\x18\x01 \x01(\tR\x04dbId\x12\x1a\n" +
 	"\btakeover\x18\x02 \x01(\bR\btakeover\"\v\n" +
-	"\tClaimSlot\"\f\n" +
+	"\tClaimSlot\"$\n" +
+	"\fSetSlotLabel\x12\x14\n" +
+	"\x05label\x18\x01 \x01(\tR\x05label\"\f\n" +
 	"\n" +
 	"DeleteSlot\"g\n" +
 	"\x04Slot\x12\x14\n" +
@@ -2447,7 +2512,7 @@ func file_sqlite_remote_v1_sqlite_remote_proto_rawDescGZIP() []byte {
 }
 
 var file_sqlite_remote_v1_sqlite_remote_proto_enumTypes = make([]protoimpl.EnumInfo, 2)
-var file_sqlite_remote_v1_sqlite_remote_proto_msgTypes = make([]protoimpl.MessageInfo, 27)
+var file_sqlite_remote_v1_sqlite_remote_proto_msgTypes = make([]protoimpl.MessageInfo, 28)
 var file_sqlite_remote_v1_sqlite_remote_proto_goTypes = []any{
 	(SigAlg)(0),          // 0: sqlite_remote.v1.SigAlg
 	(ErrorCode)(0),       // 1: sqlite_remote.v1.ErrorCode
@@ -2471,47 +2536,49 @@ var file_sqlite_remote_v1_sqlite_remote_proto_goTypes = []any{
 	(*CloseDb)(nil),      // 19: sqlite_remote.v1.CloseDb
 	(*Delete)(nil),       // 20: sqlite_remote.v1.Delete
 	(*ClaimSlot)(nil),    // 21: sqlite_remote.v1.ClaimSlot
-	(*DeleteSlot)(nil),   // 22: sqlite_remote.v1.DeleteSlot
-	(*Slot)(nil),         // 23: sqlite_remote.v1.Slot
-	(*Ping)(nil),         // 24: sqlite_remote.v1.Ping
-	(*Pong)(nil),         // 25: sqlite_remote.v1.Pong
-	(*Ok)(nil),           // 26: sqlite_remote.v1.Ok
-	(*LeaseRevoked)(nil), // 27: sqlite_remote.v1.LeaseRevoked
-	(*Error)(nil),        // 28: sqlite_remote.v1.Error
+	(*SetSlotLabel)(nil), // 22: sqlite_remote.v1.SetSlotLabel
+	(*DeleteSlot)(nil),   // 23: sqlite_remote.v1.DeleteSlot
+	(*Slot)(nil),         // 24: sqlite_remote.v1.Slot
+	(*Ping)(nil),         // 25: sqlite_remote.v1.Ping
+	(*Pong)(nil),         // 26: sqlite_remote.v1.Pong
+	(*Ok)(nil),           // 27: sqlite_remote.v1.Ok
+	(*LeaseRevoked)(nil), // 28: sqlite_remote.v1.LeaseRevoked
+	(*Error)(nil),        // 29: sqlite_remote.v1.Error
 }
 var file_sqlite_remote_v1_sqlite_remote_proto_depIdxs = []int32{
 	4,  // 0: sqlite_remote.v1.ClientFrame.hello:type_name -> sqlite_remote.v1.Hello
 	8,  // 1: sqlite_remote.v1.ClientFrame.open:type_name -> sqlite_remote.v1.Open
 	11, // 2: sqlite_remote.v1.ClientFrame.fetch:type_name -> sqlite_remote.v1.Fetch
 	16, // 3: sqlite_remote.v1.ClientFrame.commit:type_name -> sqlite_remote.v1.Commit
-	24, // 4: sqlite_remote.v1.ClientFrame.ping:type_name -> sqlite_remote.v1.Ping
+	25, // 4: sqlite_remote.v1.ClientFrame.ping:type_name -> sqlite_remote.v1.Ping
 	19, // 5: sqlite_remote.v1.ClientFrame.close_db:type_name -> sqlite_remote.v1.CloseDb
 	6,  // 6: sqlite_remote.v1.ClientFrame.proof:type_name -> sqlite_remote.v1.Proof
 	20, // 7: sqlite_remote.v1.ClientFrame.delete:type_name -> sqlite_remote.v1.Delete
 	14, // 8: sqlite_remote.v1.ClientFrame.changed:type_name -> sqlite_remote.v1.Changed
 	21, // 9: sqlite_remote.v1.ClientFrame.claim_slot:type_name -> sqlite_remote.v1.ClaimSlot
-	22, // 10: sqlite_remote.v1.ClientFrame.delete_slot:type_name -> sqlite_remote.v1.DeleteSlot
-	7,  // 11: sqlite_remote.v1.ServerFrame.hello_ok:type_name -> sqlite_remote.v1.HelloOk
-	10, // 12: sqlite_remote.v1.ServerFrame.opened:type_name -> sqlite_remote.v1.Opened
-	13, // 13: sqlite_remote.v1.ServerFrame.pages:type_name -> sqlite_remote.v1.Pages
-	18, // 14: sqlite_remote.v1.ServerFrame.commit_ack:type_name -> sqlite_remote.v1.CommitAck
-	25, // 15: sqlite_remote.v1.ServerFrame.pong:type_name -> sqlite_remote.v1.Pong
-	27, // 16: sqlite_remote.v1.ServerFrame.lease_revoked:type_name -> sqlite_remote.v1.LeaseRevoked
-	28, // 17: sqlite_remote.v1.ServerFrame.error:type_name -> sqlite_remote.v1.Error
-	26, // 18: sqlite_remote.v1.ServerFrame.ok:type_name -> sqlite_remote.v1.Ok
-	5,  // 19: sqlite_remote.v1.ServerFrame.challenge:type_name -> sqlite_remote.v1.Challenge
-	15, // 20: sqlite_remote.v1.ServerFrame.changes:type_name -> sqlite_remote.v1.Changes
-	23, // 21: sqlite_remote.v1.ServerFrame.slot:type_name -> sqlite_remote.v1.Slot
-	0,  // 22: sqlite_remote.v1.Hello.sig_alg:type_name -> sqlite_remote.v1.SigAlg
-	9,  // 23: sqlite_remote.v1.Open.resume:type_name -> sqlite_remote.v1.Resume
-	12, // 24: sqlite_remote.v1.Fetch.ranges:type_name -> sqlite_remote.v1.Range
-	17, // 25: sqlite_remote.v1.Commit.blocks:type_name -> sqlite_remote.v1.Block
-	1,  // 26: sqlite_remote.v1.Error.code:type_name -> sqlite_remote.v1.ErrorCode
-	27, // [27:27] is the sub-list for method output_type
-	27, // [27:27] is the sub-list for method input_type
-	27, // [27:27] is the sub-list for extension type_name
-	27, // [27:27] is the sub-list for extension extendee
-	0,  // [0:27] is the sub-list for field type_name
+	23, // 10: sqlite_remote.v1.ClientFrame.delete_slot:type_name -> sqlite_remote.v1.DeleteSlot
+	22, // 11: sqlite_remote.v1.ClientFrame.set_slot_label:type_name -> sqlite_remote.v1.SetSlotLabel
+	7,  // 12: sqlite_remote.v1.ServerFrame.hello_ok:type_name -> sqlite_remote.v1.HelloOk
+	10, // 13: sqlite_remote.v1.ServerFrame.opened:type_name -> sqlite_remote.v1.Opened
+	13, // 14: sqlite_remote.v1.ServerFrame.pages:type_name -> sqlite_remote.v1.Pages
+	18, // 15: sqlite_remote.v1.ServerFrame.commit_ack:type_name -> sqlite_remote.v1.CommitAck
+	26, // 16: sqlite_remote.v1.ServerFrame.pong:type_name -> sqlite_remote.v1.Pong
+	28, // 17: sqlite_remote.v1.ServerFrame.lease_revoked:type_name -> sqlite_remote.v1.LeaseRevoked
+	29, // 18: sqlite_remote.v1.ServerFrame.error:type_name -> sqlite_remote.v1.Error
+	27, // 19: sqlite_remote.v1.ServerFrame.ok:type_name -> sqlite_remote.v1.Ok
+	5,  // 20: sqlite_remote.v1.ServerFrame.challenge:type_name -> sqlite_remote.v1.Challenge
+	15, // 21: sqlite_remote.v1.ServerFrame.changes:type_name -> sqlite_remote.v1.Changes
+	24, // 22: sqlite_remote.v1.ServerFrame.slot:type_name -> sqlite_remote.v1.Slot
+	0,  // 23: sqlite_remote.v1.Hello.sig_alg:type_name -> sqlite_remote.v1.SigAlg
+	9,  // 24: sqlite_remote.v1.Open.resume:type_name -> sqlite_remote.v1.Resume
+	12, // 25: sqlite_remote.v1.Fetch.ranges:type_name -> sqlite_remote.v1.Range
+	17, // 26: sqlite_remote.v1.Commit.blocks:type_name -> sqlite_remote.v1.Block
+	1,  // 27: sqlite_remote.v1.Error.code:type_name -> sqlite_remote.v1.ErrorCode
+	28, // [28:28] is the sub-list for method output_type
+	28, // [28:28] is the sub-list for method input_type
+	28, // [28:28] is the sub-list for extension type_name
+	28, // [28:28] is the sub-list for extension extendee
+	0,  // [0:28] is the sub-list for field type_name
 }
 
 func init() { file_sqlite_remote_v1_sqlite_remote_proto_init() }
@@ -2531,6 +2598,7 @@ func file_sqlite_remote_v1_sqlite_remote_proto_init() {
 		(*ClientFrame_Changed)(nil),
 		(*ClientFrame_ClaimSlot)(nil),
 		(*ClientFrame_DeleteSlot)(nil),
+		(*ClientFrame_SetSlotLabel)(nil),
 	}
 	file_sqlite_remote_v1_sqlite_remote_proto_msgTypes[1].OneofWrappers = []any{
 		(*ServerFrame_HelloOk)(nil),
@@ -2551,7 +2619,7 @@ func file_sqlite_remote_v1_sqlite_remote_proto_init() {
 			GoPackagePath: reflect.TypeOf(x{}).PkgPath(),
 			RawDescriptor: unsafe.Slice(unsafe.StringData(file_sqlite_remote_v1_sqlite_remote_proto_rawDesc), len(file_sqlite_remote_v1_sqlite_remote_proto_rawDesc)),
 			NumEnums:      2,
-			NumMessages:   27,
+			NumMessages:   28,
 			NumExtensions: 0,
 			NumServices:   0,
 		},

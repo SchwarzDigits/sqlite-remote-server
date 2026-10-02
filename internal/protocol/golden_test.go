@@ -127,6 +127,9 @@ func samples() []sample {
 			Label: "device-2", ClaimedAtMs: timeMs, ReplacedLabel: "device-1",
 		}}}},
 		{"client_delete_slot", &pb.ClientFrame{RequestId: 9, Body: &pb.ClientFrame_DeleteSlot{DeleteSlot: &pb.DeleteSlot{}}}},
+		{"client_set_slot_label", &pb.ClientFrame{RequestId: 10, Body: &pb.ClientFrame_SetSlotLabel{
+			SetSlotLabel: &pb.SetSlotLabel{Label: "device-2"},
+		}}},
 		{"server_error_slot_taken", &pb.ServerFrame{RequestId: 3, Body: &pb.ServerFrame_Error{Error: &pb.Error{
 			Code: pb.ErrorCode_ERROR_CODE_SLOT_TAKEN, Detail: "another key holds the slot",
 		}}}},

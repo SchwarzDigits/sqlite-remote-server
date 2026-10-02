@@ -42,7 +42,6 @@ const (
 	EnvTokenIssuer           = "SQLITE_REMOTE_TOKEN_ISSUER"
 	EnvTokenAudience         = "SQLITE_REMOTE_TOKEN_AUDIENCE"
 	EnvTokenLeeway           = "SQLITE_REMOTE_TOKEN_LEEWAY"
-	EnvTokenSlotLabelClaim   = "SQLITE_REMOTE_TOKEN_SLOT_LABEL_CLAIM"
 )
 
 const defaultPort = 8080
@@ -68,7 +67,6 @@ var envOf = map[string]string{
 	"TokenIssuer":            EnvTokenIssuer,
 	"TokenAudience":          EnvTokenAudience,
 	"TokenLeeway":            EnvTokenLeeway,
-	"TokenSlotLabelClaim":    EnvTokenSlotLabelClaim,
 }
 
 // Config is the configuration of the command.
@@ -109,7 +107,6 @@ func LoadFrom(getenv func(string) string) (Config, error) {
 	s.TokenJWKSFile = getenv(EnvTokenJWKSFile)
 	s.TokenIssuer = getenv(EnvTokenIssuer)
 	s.TokenAudience = getenv(EnvTokenAudience)
-	s.TokenSlotLabelClaim = getenv(EnvTokenSlotLabelClaim)
 
 	var err error
 	if s.DBMaxConns, err = connsVar(getenv, EnvDBMaxConns); err != nil {

@@ -629,6 +629,32 @@ func (q *Queries) ReviveDatabase(ctx context.Context, arg ReviveDatabaseParams) 
 	return i, err
 }
 
+const setSlotLabel = `-- name: SetSlotLabel :one
+UPDATE slots
+SET label = $3
+WHERE owner = $1 AND subject = $2
+RETURNING owner, subject, label, claimed_at
+`
+
+type SetSlotLabelParams struct {
+	Owner   string
+	Subject string
+	Label   string
+}
+
+// SetSlotLabel changes the label only while subject holds the owner's slot.
+func (q *Queries) SetSlotLabel(ctx context.Context, arg SetSlotLabelParams) (Slot, error) {
+	row := q.db.QueryRow(ctx, setSlotLabel, arg.Owner, arg.Subject, arg.Label)
+	var i Slot
+	err := row.Scan(
+		&i.Owner,
+		&i.Subject,
+		&i.Label,
+		&i.ClaimedAt,
+	)
+	return i, err
+}
+
 const shareSlot = `-- name: ShareSlot :one
 SELECT owner, subject, label, claimed_at FROM slots
 WHERE owner = $1

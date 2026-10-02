@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"net/http"
 	"net/http/httptest"
+	"strings"
 	"testing"
 	"time"
 
@@ -18,14 +19,13 @@ import (
 
 const testOwner = "owner-1"
 
-// device returns a token for the key of name, owned by owner and labeled label.
-func (i *issuer) device(name, owner, label string) string {
+// device returns a token for the key of name, owned by owner.
+func (i *issuer) device(name, owner string) string {
 	i.t.Helper()
 	public, _ := keyFor(name)
 	return i.sign(jwt.MapClaims{
-		"sub":          owner,
-		testLabelClaim: label,
-		"exp":          t0.Add(time.Hour).Unix(),
+		"sub": owner,
+		"exp": t0.Add(time.Hour).Unix(),
 		"cnf": map[string]any{"jwk": map[string]string{
 			"kty": "OKP", "crv": "Ed25519", "x": base64.RawURLEncoding.EncodeToString(public),
 		}},
@@ -48,6 +48,10 @@ func (c *client) loginAs(name, accessToken string) {
 
 func claimFrame() *pb.ClientFrame {
 	return &pb.ClientFrame{Body: &pb.ClientFrame_ClaimSlot{ClaimSlot: &pb.ClaimSlot{}}}
+}
+
+func labelFrame(label string) *pb.ClientFrame {
+	return &pb.ClientFrame{Body: &pb.ClientFrame_SetSlotLabel{SetSlotLabel: &pb.SetSlotLabel{Label: label}}}
 }
 
 func deleteSlotFrame() *pb.ClientFrame {
@@ -83,6 +87,7 @@ func TestSlotsNeedAccessTokens(t *testing.T) {
 	a.hello("alice")
 	requireError(t, a.call(claimFrame()), pb.ErrorCode_ERROR_CODE_BAD_REQUEST)
 	requireError(t, a.call(deleteSlotFrame()), pb.ErrorCode_ERROR_CODE_BAD_REQUEST)
+	requireError(t, a.call(labelFrame("device-a")), pb.ErrorCode_ERROR_CODE_BAD_REQUEST)
 
 	res, _ := getSlot(t, e, "", nil)
 	require.Equal(t, http.StatusNotFound, res.StatusCode)
@@ -92,31 +97,51 @@ func TestClaimSlotReturnsTheSlot(t *testing.T) {
 	tokens, gate := withTokens(t)
 	e := start(t, gate)
 	a := e.connect(t, 0xa)
-	a.loginAs("alice", tokens.device("alice", testOwner, "device-a"))
+	a.loginAs("alice", tokens.device("alice", testOwner))
 
 	answer := a.call(claimFrame())
-	require.Equal(t, &pb.Slot{Label: "device-a", ClaimedAtMs: uint64(t0.UnixMilli())}, answer.GetSlot(), "answer %v", answer)
+	require.Equal(t, &pb.Slot{ClaimedAtMs: uint64(t0.UnixMilli())}, answer.GetSlot(), "answer %v", answer)
 
 	e.clock.Advance(time.Minute)
+	answer = a.call(labelFrame("device-a"))
+	require.Equal(t, &pb.Slot{Label: "device-a", ClaimedAtMs: uint64(t0.UnixMilli())}, answer.GetSlot(), "answer %v", answer)
 	answer = a.call(claimFrame())
-	require.Equal(t, uint64(t0.UnixMilli()), answer.GetSlot().GetClaimedAtMs(), "claiming again keeps the time")
+	require.Equal(t, &pb.Slot{Label: "device-a", ClaimedAtMs: uint64(t0.UnixMilli())}, answer.GetSlot(),
+		"claiming again changes nothing")
+}
+
+func TestOnlyTheHolderSetsTheLabel(t *testing.T) {
+	tokens, gate := withTokens(t)
+	e := start(t, gate)
+	a := e.connect(t, 0xa)
+	a.loginAs("alice", tokens.device("alice", testOwner))
+	requireError(t, a.call(labelFrame("device-a")), pb.ErrorCode_ERROR_CODE_NOT_FOUND)
+	a.call(claimFrame())
+	requireError(t, a.call(labelFrame(strings.Repeat("x", 257))), pb.ErrorCode_ERROR_CODE_BAD_REQUEST)
+
+	b := e.connect(t, 0xb)
+	b.loginAs("bob", tokens.device("bob", testOwner))
+	requireError(t, b.call(labelFrame("device-b")), pb.ErrorCode_ERROR_CODE_SLOT_TAKEN)
+	_, body := getSlot(t, e, tokens.unbound(testOwner), nil)
+	require.Empty(t, body.Slot.Label, "the label request of another key changes nothing")
 }
 
 func TestClaimSlotReplacesTheOtherKey(t *testing.T) {
 	tokens, gate := withTokens(t)
 	e := start(t, gate)
 	a := e.connect(t, 0xa)
-	a.loginAs("alice", tokens.device("alice", testOwner, "device-a"))
+	a.loginAs("alice", tokens.device("alice", testOwner))
 	a.call(claimFrame())
+	a.call(labelFrame("device-a"))
 	a.open(testDB, true, false)
 	answer := a.call(commitFrame(1, 0, 1, commitIDOf(1), block(0, 0xa0)))
 	require.NotNil(t, answer.GetCommitAck(), "answer %v", answer)
 
 	b := e.connect(t, 0xb)
-	b.loginAs("bob", tokens.device("bob", testOwner, "device-b"))
+	b.loginAs("bob", tokens.device("bob", testOwner))
 	requireError(t, b.call(openFrame(testDB, true, false, nil)), pb.ErrorCode_ERROR_CODE_SLOT_TAKEN)
 	answer = b.call(claimFrame())
-	require.Equal(t, "device-b", answer.GetSlot().GetLabel(), "answer %v", answer)
+	require.Empty(t, answer.GetSlot().GetLabel(), "answer %v", answer)
 	require.Equal(t, "device-a", answer.GetSlot().GetReplacedLabel())
 
 	push := a.recv()
@@ -125,7 +150,7 @@ func TestClaimSlotReplacesTheOtherKey(t *testing.T) {
 	requireError(t, a.call(commitFrame(1, 1, 1, commitIDOf(2), block(0, 0xa1))), pb.ErrorCode_ERROR_CODE_FENCED)
 
 	again := e.connect(t, 0xa)
-	again.loginAs("alice", tokens.device("alice", testOwner, "device-a"))
+	again.loginAs("alice", tokens.device("alice", testOwner))
 	requireError(t, again.call(openFrame(testDB, false, false, nil)), pb.ErrorCode_ERROR_CODE_SLOT_TAKEN)
 
 	opened := b.open(testDB, true, false)
@@ -142,12 +167,12 @@ func TestReplacedKeyOnAnotherInstanceIsFenced(t *testing.T) {
 	e2 := start(t, gate, useShared)
 
 	a := e1.connect(t, 0xa)
-	a.loginAs("alice", tokens.device("alice", testOwner, "device-a"))
+	a.loginAs("alice", tokens.device("alice", testOwner))
 	a.call(claimFrame())
 	a.open(testDB, true, false)
 
 	b := e2.connect(t, 0xb)
-	b.loginAs("bob", tokens.device("bob", testOwner, "device-b"))
+	b.loginAs("bob", tokens.device("bob", testOwner))
 	require.NotNil(t, b.call(claimFrame()).GetSlot())
 
 	requireError(t, a.call(fetchFrame(0, 0, 1)), pb.ErrorCode_ERROR_CODE_FENCED)
@@ -158,13 +183,13 @@ func TestDeleteSlotRemovesSlotAndDatabases(t *testing.T) {
 	tokens, gate := withTokens(t)
 	e := start(t, gate)
 	a := e.connect(t, 0xa)
-	a.loginAs("alice", tokens.device("alice", testOwner, "device-a"))
+	a.loginAs("alice", tokens.device("alice", testOwner))
 	a.call(claimFrame())
 	opened := a.open(testDB, true, false)
 	requireError(t, a.call(deleteSlotFrame()), pb.ErrorCode_ERROR_CODE_BAD_REQUEST)
 
 	b := e.connect(t, 0xb)
-	b.loginAs("bob", tokens.device("bob", testOwner, "device-b"))
+	b.loginAs("bob", tokens.device("bob", testOwner))
 	requireError(t, b.call(deleteSlotFrame()), pb.ErrorCode_ERROR_CODE_SLOT_TAKEN)
 
 	a.call(&pb.ClientFrame{Body: &pb.ClientFrame_CloseDb{CloseDb: &pb.CloseDb{
@@ -186,11 +211,12 @@ func TestSlotEndpoint(t *testing.T) {
 	require.Nil(t, body.Slot)
 
 	a := e.connect(t, 0xa)
-	a.loginAs("alice", tokens.device("alice", testOwner, "device-a"))
+	a.loginAs("alice", tokens.device("alice", testOwner))
 	a.call(claimFrame())
+	a.call(labelFrame("device-a"))
 	_, body = getSlot(t, e, tokens.unbound(testOwner), nil)
 	require.Equal(t, &protocol.SlotInfo{Label: "device-a", ClaimedAtMs: t0.UnixMilli()}, body.Slot)
-	_, body = getSlot(t, e, tokens.device("alice", testOwner, "device-a"), nil)
+	_, body = getSlot(t, e, tokens.device("alice", testOwner), nil)
 	require.NotNil(t, body.Slot, "a bound token works too")
 	_, body = getSlot(t, e, tokens.unbound("owner-2"), nil)
 	require.Nil(t, body.Slot, "other owners see only their own slot")

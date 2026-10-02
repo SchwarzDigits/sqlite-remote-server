@@ -169,6 +169,13 @@ SET subject = $2,
 WHERE owner = $1
 RETURNING *;
 
+-- SetSlotLabel changes the label only while subject holds the owner's slot.
+-- name: SetSlotLabel :one
+UPDATE slots
+SET label = $3
+WHERE owner = $1 AND subject = $2
+RETURNING *;
+
 -- name: DeleteSlotOf :exec
 DELETE FROM slots
 WHERE owner = $1;

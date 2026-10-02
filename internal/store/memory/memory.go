@@ -312,17 +312,35 @@ func (s *Store) ClaimSlot(_ context.Context, req store.ClaimRequest) (store.Clai
 	s.mu.Lock()
 	defer s.mu.Unlock()
 
-	slot := store.Slot{Subject: req.Subject, Label: req.Label, ClaimedAt: req.Now}
+	old, ok := s.slots[req.Owner]
+	if ok && old.Subject == req.Subject {
+		return store.ClaimResult{Slot: old}, nil
+	}
 	var result store.ClaimResult
-	if old, ok := s.slots[req.Owner]; ok && old.Subject == req.Subject {
-		slot.ClaimedAt = old.ClaimedAt
-	} else if ok {
+	if ok {
 		result.Replaced = &old
 		result.Deleted = s.purge(old.Subject)
 	}
-	s.slots[req.Owner] = slot
-	result.Slot = slot
+	result.Slot = store.Slot{Subject: req.Subject, ClaimedAt: req.Now}
+	s.slots[req.Owner] = result.Slot
 	return result, nil
+}
+
+// SetSlotLabel implements store.Store.
+func (s *Store) SetSlotLabel(_ context.Context, owner, subject, label string) (store.Slot, error) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+
+	slot, ok := s.slots[owner]
+	switch {
+	case !ok:
+		return store.Slot{}, store.ErrNotFound
+	case slot.Subject != subject:
+		return store.Slot{}, store.ErrSlotTaken
+	}
+	slot.Label = label
+	s.slots[owner] = slot
+	return slot, nil
 }
 
 // DeleteSlot implements store.Store.

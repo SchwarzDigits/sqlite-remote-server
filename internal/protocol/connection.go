@@ -50,10 +50,8 @@ type connection struct {
 	subject  string
 	instance []byte
 	dbs      map[string]*openDB
-	// owner and label come from the access token: the owner of the key and the label of its slot. Empty without
-	// access tokens.
+	// owner is the owner of the key, the sub of the access token. Empty without access tokens.
 	owner string
-	label string
 	// tokenExpires is the expiry of the access token. Zero without a token.
 	tokenExpires time.Time
 }
@@ -218,7 +216,6 @@ func (c *connection) admit(ctx context.Context, hello *pb.Hello) error {
 	}
 	c.tokenExpires = grant.Expires
 	c.owner = grant.Owner
-	c.label = grant.Label
 	return nil
 }
 
@@ -311,6 +308,8 @@ func (c *connection) handle(ctx context.Context, frame *pb.ClientFrame) {
 		c.claimSlot(ctx, id)
 	case *pb.ClientFrame_DeleteSlot:
 		c.deleteSlot(ctx, id)
+	case *pb.ClientFrame_SetSlotLabel:
+		c.setSlotLabel(ctx, id, body.SetSlotLabel)
 	case *pb.ClientFrame_Hello:
 		c.fail(ctx, id, store.BadRequest("Hello was already sent"))
 	default:
@@ -592,7 +591,7 @@ func (c *connection) claimSlot(ctx context.Context, id uint64) {
 		return
 	}
 	res, err := c.s.opts.Store.ClaimSlot(ctx, store.ClaimRequest{
-		Owner: c.owner, Subject: c.subject, Label: c.label, Now: c.s.opts.Now(),
+		Owner: c.owner, Subject: c.subject, Now: c.s.opts.Now(),
 	})
 	if err != nil {
 		c.fail(ctx, id, err)
@@ -601,13 +600,38 @@ func (c *connection) claimSlot(ctx context.Context, id uint64) {
 	for _, key := range res.Deleted {
 		c.s.holders.purge(key)
 	}
-	slot := &pb.Slot{Label: res.Slot.Label, ClaimedAtMs: uint64(res.Slot.ClaimedAt.UnixMilli())}
+	slot := slotFrame(res.Slot)
 	if res.Replaced != nil {
 		slot.ReplacedLabel = res.Replaced.Label
-		c.log.Info("slot claimed from another key", "label", res.Slot.Label,
-			"replaced_label", res.Replaced.Label, "deleted_databases", len(res.Deleted))
+		c.log.Info("slot claimed from another key", "replaced_label", res.Replaced.Label,
+			"deleted_databases", len(res.Deleted))
 	}
 	c.send(ctx, &pb.ServerFrame{RequestId: id, Body: &pb.ServerFrame_Slot{Slot: slot}})
+}
+
+// setSlotLabel sets the label of the owner's slot, which this connection's key must hold. See pb.SetSlotLabel.
+func (c *connection) setSlotLabel(ctx context.Context, id uint64, req *pb.SetSlotLabel) {
+	switch {
+	case c.owner == "":
+		c.fail(ctx, id, store.BadRequest("slots need access tokens with a sub claim"))
+		return
+	case len(req.GetLabel()) > maxSlotLabelBytes:
+		c.fail(ctx, id, store.BadRequest("label must have at most %d bytes", maxSlotLabelBytes))
+		return
+	}
+	slot, err := c.s.opts.Store.SetSlotLabel(ctx, c.owner, c.subject, req.GetLabel())
+	if err != nil {
+		c.fail(ctx, id, err)
+		return
+	}
+	c.send(ctx, &pb.ServerFrame{RequestId: id, Body: &pb.ServerFrame_Slot{Slot: slotFrame(slot)}})
+}
+
+// maxSlotLabelBytes bounds the label of a slot.
+const maxSlotLabelBytes = 256
+
+func slotFrame(slot store.Slot) *pb.Slot {
+	return &pb.Slot{Label: slot.Label, ClaimedAtMs: uint64(slot.ClaimedAt.UnixMilli())}
 }
 
 // deleteSlot releases the owner's slot and deletes all databases of the key of this connection. See pb.DeleteSlot.

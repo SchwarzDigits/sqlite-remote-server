@@ -67,7 +67,8 @@ func Run(t *testing.T, newStore func(t *testing.T) store.Store) {
 		{"DeleteUnusedKeepsUsedDatabases", deleteUnusedKeepsUsedDatabases},
 		{"DeleteUnusedRespectsLimit", deleteUnusedRespectsLimit},
 		{"ClaimFreeSlot", claimFreeSlot},
-		{"ReclaimKeepsClaimTime", reclaimKeepsClaimTime},
+		{"ReclaimChangesNothing", reclaimChangesNothing},
+		{"OnlyTheHolderSetsTheLabel", onlyTheHolderSetsTheLabel},
 		{"ClaimReplacesOtherKey", claimReplacesOtherKey},
 		{"SlotBlocksOwnersOtherKeys", slotBlocksOwnersOtherKeys},
 		{"DeleteSlotPurgesHolder", deleteSlotPurgesHolder},
@@ -671,11 +672,18 @@ func owner(t *testing.T) string {
 	return "owner-" + t.Name() + "-" + run
 }
 
-func claim(t *testing.T, s store.Store, owner, subject, label string, now time.Time) store.ClaimResult {
+func claim(t *testing.T, s store.Store, owner, subject string, now time.Time) store.ClaimResult {
 	t.Helper()
-	res, err := s.ClaimSlot(context.Background(), store.ClaimRequest{Owner: owner, Subject: subject, Label: label, Now: now})
+	res, err := s.ClaimSlot(context.Background(), store.ClaimRequest{Owner: owner, Subject: subject, Now: now})
 	require.NoError(t, err)
 	return res
+}
+
+func label(t *testing.T, s store.Store, owner, subject, label string) store.Slot {
+	t.Helper()
+	slot, err := s.SetSlotLabel(context.Background(), owner, subject, label)
+	require.NoError(t, err)
+	return slot
 }
 
 func openAs(s store.Store, owner string, k store.Key, create bool, now time.Time) (store.OpenResult, error) {
@@ -690,14 +698,16 @@ func claimFreeSlot(t *testing.T, s store.Store) {
 	require.NoError(t, err)
 	require.False(t, ok)
 
-	res := claim(t, s, o, alice, "device-1", t0)
+	res := claim(t, s, o, alice, t0)
 	require.Nil(t, res.Replaced)
 	require.Empty(t, res.Deleted)
-	want := store.Slot{Subject: alice, Label: "device-1", ClaimedAt: t0}
-	require.Equal(t, want.Subject, res.Slot.Subject)
-	require.Equal(t, want.Label, res.Slot.Label)
-	require.True(t, want.ClaimedAt.Equal(res.Slot.ClaimedAt))
+	require.Equal(t, alice, res.Slot.Subject)
+	require.Empty(t, res.Slot.Label, "a claimed slot has no label")
+	require.True(t, t0.Equal(res.Slot.ClaimedAt))
 
+	labeled := label(t, s, o, alice, "device-1")
+	require.Equal(t, "device-1", labeled.Label)
+	require.True(t, t0.Equal(labeled.ClaimedAt), "labeling keeps the claim time")
 	got, ok, err := s.GetSlot(context.Background(), o)
 	require.NoError(t, err)
 	require.True(t, ok)
@@ -706,24 +716,43 @@ func claimFreeSlot(t *testing.T, s store.Store) {
 	require.True(t, t0.Equal(got.ClaimedAt))
 }
 
-func reclaimKeepsClaimTime(t *testing.T, s store.Store) {
+func reclaimChangesNothing(t *testing.T, s store.Store) {
 	o, alice := owner(t), subject(t, "alice")
 	k := key(t, "db")
-	claim(t, s, o, alice, "device-1", t0)
+	claim(t, s, o, alice, t0)
+	label(t, s, o, alice, "device-1")
 	create(t, s, k, instanceA, t0)
 
-	res := claim(t, s, o, alice, "renamed", t0.Add(time.Hour))
+	res := claim(t, s, o, alice, t0.Add(time.Hour))
 	require.Nil(t, res.Replaced, "the slot did not change hands")
 	require.Empty(t, res.Deleted)
-	require.Equal(t, "renamed", res.Slot.Label)
+	require.Equal(t, "device-1", res.Slot.Label, "the label stays")
 	require.True(t, t0.Equal(res.Slot.ClaimedAt), "the claim time stays")
 	_, err := openAs(s, o, k, false, t0.Add(time.Hour))
 	require.NoError(t, err, "the holder's databases stay")
 }
 
+func onlyTheHolderSetsTheLabel(t *testing.T, s store.Store) {
+	o, alice, bob := owner(t), subject(t, "alice"), subject(t, "bob")
+	_, err := s.SetSlotLabel(context.Background(), o, alice, "device-1")
+	require.ErrorIs(t, err, store.ErrNotFound, "no slot yet")
+
+	claim(t, s, o, alice, t0)
+	label(t, s, o, alice, "device-1")
+	_, err = s.SetSlotLabel(context.Background(), o, bob, "device-2")
+	require.ErrorIs(t, err, store.ErrSlotTaken)
+	got, _, err := s.GetSlot(context.Background(), o)
+	require.NoError(t, err)
+	require.Equal(t, alice, got.Subject, "another key's label request changes nothing")
+	require.Equal(t, "device-1", got.Label)
+
+	require.Empty(t, label(t, s, o, alice, "").Label, "an empty label clears it")
+}
+
 func claimReplacesOtherKey(t *testing.T, s store.Store) {
 	o, alice, bob := owner(t), subject(t, "alice"), subject(t, "bob")
-	claim(t, s, o, alice, "device-1", t0)
+	claim(t, s, o, alice, t0)
+	label(t, s, o, alice, "device-1")
 	first, second := key(t, "first"), key(t, "second")
 	for _, k := range []store.Key{second, first} {
 		lease := create(t, s, k, instanceA, t0).Lease
@@ -735,10 +764,11 @@ func claimReplacesOtherKey(t *testing.T, s store.Store) {
 	_, err := remove(s, deleted, true, t0)
 	require.NoError(t, err)
 
-	res := claim(t, s, o, bob, "device-2", t0.Add(time.Minute))
+	res := claim(t, s, o, bob, t0.Add(time.Minute))
 	require.NotNil(t, res.Replaced)
 	require.Equal(t, alice, res.Replaced.Subject)
 	require.Equal(t, "device-1", res.Replaced.Label)
+	require.Empty(t, res.Slot.Label, "the new key starts without a label")
 	require.Equal(t, []store.Key{first, second}, res.Deleted, "the replaced key's databases, sorted, without deleted ones")
 	require.Equal(t, bob, res.Slot.Subject)
 	require.True(t, t0.Add(time.Minute).Equal(res.Slot.ClaimedAt))
@@ -760,7 +790,7 @@ func slotBlocksOwnersOtherKeys(t *testing.T, s store.Store) {
 	kb := store.Key{Subject: bob, DBID: "db"}
 	// Created with the instance openAs uses, so that the instance's own lease does not block the opens below.
 	lease := create(t, s, kb, instanceA, t0).Lease
-	claim(t, s, o, alice, "device-1", t0)
+	claim(t, s, o, alice, t0)
 
 	_, err := openAs(s, o, ka, true, t0)
 	require.NoError(t, err, "the holder opens")
@@ -780,7 +810,7 @@ func slotBlocksOwnersOtherKeys(t *testing.T, s store.Store) {
 func deleteSlotPurgesHolder(t *testing.T, s store.Store) {
 	o, alice, bob := owner(t), subject(t, "alice"), subject(t, "bob")
 	k := key(t, "db")
-	claim(t, s, o, alice, "device-1", t0)
+	claim(t, s, o, alice, t0)
 	create(t, s, k, instanceA, t0)
 
 	_, err := s.DeleteSlot(context.Background(), o, bob)
@@ -809,12 +839,12 @@ func deleteUnusedReleasesSlots(t *testing.T, s store.Store) {
 	cutoff := longAgo.AddDate(0, 6, 0)
 	o, alice := owner(t), subject(t, "alice")
 	k := key(t, "db")
-	claim(t, s, o, alice, "device-1", longAgo)
+	claim(t, s, o, alice, longAgo)
 	create(t, s, k, instanceA, longAgo)
 
 	// A slot claimed after the cutoff whose key has no databases yet stays.
 	fresh := owner(t) + "-fresh"
-	claim(t, s, fresh, subject(t, "carol"), "device-3", cutoff)
+	claim(t, s, fresh, subject(t, "carol"), cutoff)
 
 	require.Equal(t, []store.Key{k}, deleteUnused(t, s, cutoff))
 	_, ok, err := s.GetSlot(context.Background(), o)

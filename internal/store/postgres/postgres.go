@@ -523,7 +523,7 @@ func (s *Store) ClaimSlot(ctx context.Context, req store.ClaimRequest) (store.Cl
 		row, err := q.LockSlot(ctx, req.Owner)
 		if errors.Is(err, pgx.ErrNoRows) {
 			row, err = q.InsertSlot(ctx, db.InsertSlotParams{
-				Owner: req.Owner, Subject: req.Subject, Label: req.Label, ClaimedAt: timestamp(req.Now),
+				Owner: req.Owner, Subject: req.Subject, Label: "", ClaimedAt: timestamp(req.Now),
 			})
 			if err == nil {
 				result.Slot = slotOf(row)
@@ -537,20 +537,19 @@ func (s *Store) ClaimSlot(ctx context.Context, req store.ClaimRequest) (store.Cl
 		if err != nil {
 			return err
 		}
-		claimedAt := timestamp(req.Now)
 		if row.Subject == req.Subject {
-			claimedAt = row.ClaimedAt
-		} else {
-			replaced := slotOf(row)
-			result.Replaced = &replaced
-			purged, err := q.PurgeSubject(ctx, row.Subject)
-			if err != nil {
-				return err
-			}
-			result.Deleted = keysOf(row.Subject, purged)
+			result.Slot = slotOf(row)
+			return nil
 		}
+		replaced := slotOf(row)
+		result.Replaced = &replaced
+		purged, err := q.PurgeSubject(ctx, row.Subject)
+		if err != nil {
+			return err
+		}
+		result.Deleted = keysOf(row.Subject, purged)
 		updated, err := q.UpdateSlot(ctx, db.UpdateSlotParams{
-			Owner: req.Owner, Subject: req.Subject, Label: req.Label, ClaimedAt: claimedAt,
+			Owner: req.Owner, Subject: req.Subject, Label: "", ClaimedAt: timestamp(req.Now),
 		})
 		if err != nil {
 			return err
@@ -562,6 +561,23 @@ func (s *Store) ClaimSlot(ctx context.Context, req store.ClaimRequest) (store.Cl
 		return store.ClaimResult{}, err
 	}
 	return result, nil
+}
+
+// SetSlotLabel implements store.Store.
+func (s *Store) SetSlotLabel(ctx context.Context, owner, subject, label string) (store.Slot, error) {
+	row, err := s.q.SetSlotLabel(ctx, db.SetSlotLabelParams{Owner: owner, Subject: subject, Label: label})
+	if err == nil {
+		return slotOf(row), nil
+	}
+	if !errors.Is(err, pgx.ErrNoRows) {
+		return store.Slot{}, err
+	}
+	if _, ok, err := s.GetSlot(ctx, owner); err != nil {
+		return store.Slot{}, err
+	} else if ok {
+		return store.Slot{}, store.ErrSlotTaken
+	}
+	return store.Slot{}, store.ErrNotFound
 }
 
 // DeleteSlot implements store.Store.

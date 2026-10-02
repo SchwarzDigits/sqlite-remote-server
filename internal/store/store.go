@@ -138,7 +138,6 @@ type Slot struct {
 type ClaimRequest struct {
 	Owner   string
 	Subject string
-	Label   string
 	Now     time.Time
 }
 
@@ -187,10 +186,13 @@ type Store interface {
 	DeleteUnused(ctx context.Context, cutoff time.Time, limit int) ([]Key, error)
 	// GetSlot returns the owner's slot, and false if the owner has none.
 	GetSlot(ctx context.Context, owner string) (Slot, bool, error)
-	// ClaimSlot passes the owner's slot to req.Subject. If another key held it, all databases of that key are deleted
-	// completely: unlike Delete, no record stays. Claiming a slot that req.Subject already holds updates the label and
-	// keeps ClaimedAt.
+	// ClaimSlot passes the owner's slot to req.Subject, with an empty label. If another key held it, all databases of
+	// that key are deleted completely: unlike Delete, no record stays. Claiming a slot that req.Subject already holds
+	// changes nothing.
 	ClaimSlot(ctx context.Context, req ClaimRequest) (ClaimResult, error)
+	// SetSlotLabel sets the label of the owner's slot if subject holds it. It returns ErrSlotTaken if another key holds
+	// the slot and ErrNotFound if the owner has none.
+	SetSlotLabel(ctx context.Context, owner, subject, label string) (Slot, error)
 	// DeleteSlot releases the owner's slot and deletes all databases of subject completely. If another key holds the
 	// slot, it returns ErrSlotTaken and deletes nothing. It returns the deleted databases.
 	DeleteSlot(ctx context.Context, owner, subject string) ([]Key, error)

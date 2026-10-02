@@ -11,7 +11,6 @@ import (
 	"crypto/ecdsa"
 	"crypto/ed25519"
 	"encoding/base64"
-	"encoding/json"
 	"errors"
 	"fmt"
 	"log/slog"
@@ -34,9 +33,6 @@ type Config struct {
 	Issuer string
 	// Audience must be the aud claim, or one of its values.
 	Audience string
-	// LabelClaim names the claim that holds the label of the client's slot, e.g. the id of its device. Empty means
-	// slots have no label.
-	LabelClaim string
 	// Leeway allows for clock differences in exp and nbf.
 	Leeway time.Duration
 	// HTTPClient fetches the JWKS. Nil means a client with a timeout of 10 s.
@@ -47,11 +43,10 @@ type Config struct {
 
 // Verifier checks tokens. It is safe for concurrent use.
 type Verifier struct {
-	keys       *keySet
-	parser     *jwt.Parser
-	leeway     time.Duration
-	now        func() time.Time
-	labelClaim string
+	keys   *keySet
+	parser *jwt.Parser
+	leeway time.Duration
+	now    func() time.Time
 }
 
 // Grant is what a valid token says about its client.
@@ -59,8 +54,6 @@ type Grant struct {
 	Expires time.Time
 	// Owner is the token's sub: the owner of the client's key and of its slot. Empty if the token has no sub.
 	Owner string
-	// Label is the value of Config.LabelClaim, empty if that is not configured or the token has no such string claim.
-	Label string
 }
 
 // DeniedError reports why a token was rejected.
@@ -104,9 +97,8 @@ func New(cfg Config, log *slog.Logger) (*Verifier, error) {
 			jwt.WithLeeway(cfg.Leeway),
 			jwt.WithTimeFunc(cfg.Now),
 		),
-		leeway:     cfg.Leeway,
-		now:        cfg.Now,
-		labelClaim: cfg.LabelClaim,
+		leeway: cfg.Leeway,
+		now:    cfg.Now,
 	}, nil
 }
 
@@ -124,25 +116,6 @@ type claims struct {
 			X   string `json:"x"`
 		} `json:"jwk"`
 	} `json:"cnf"`
-	// all holds every claim, for the label claim, whose name is configured.
-	all map[string]json.RawMessage
-}
-
-func (c *claims) UnmarshalJSON(data []byte) error {
-	type fields claims
-	if err := json.Unmarshal(data, (*fields)(c)); err != nil {
-		return err
-	}
-	return json.Unmarshal(data, &c.all)
-}
-
-// label returns the string claim name, or "" if name is empty or the claim is missing or not a string.
-func (c *claims) label(name string) string {
-	var label string
-	if name == "" || json.Unmarshal(c.all[name], &label) != nil {
-		return ""
-	}
-	return label
 }
 
 // Verify checks a token for a client that logs in with the Ed25519 key publicKey. A rejected token returns a
@@ -180,7 +153,7 @@ func (v *Verifier) VerifyUnbound(ctx context.Context, token string) (Grant, erro
 }
 
 func (v *Verifier) grant(c *claims) Grant {
-	return Grant{Expires: c.ExpiresAt.Time, Owner: c.Subject, Label: c.label(v.labelClaim)}
+	return Grant{Expires: c.ExpiresAt.Time, Owner: c.Subject}
 }
 
 // parse checks the signature, issuer, audience and times of a token and returns its claims.
