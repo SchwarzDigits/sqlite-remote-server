@@ -13,7 +13,7 @@ import (
 	"github.com/SchwarzDigits/sqlite-remote-server/internal/token"
 )
 
-// Path is the WebSocket endpoint. It is the only path the ingress exposes publicly.
+// Path is the WebSocket endpoint. The ingress exposes it and SlotPath publicly, the health probes only internally.
 const Path = "/v1/ws"
 
 // Version is the protocol version of this server.
